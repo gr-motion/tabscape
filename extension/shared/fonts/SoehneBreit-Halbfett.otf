@@ -1,0 +1,6 @@
+@font-face {
+  font-family: 'Söhne';
+  src: url('SoehneBreit-Halbfett.otf') format('opentype');
+  font-weight: 600; /* Assuming semi-bold */
+  font-style: normal;
+}

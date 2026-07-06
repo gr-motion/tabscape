@@ -1,0 +1,6 @@
+@font-face {
+  font-family: 'Söhne';
+  src: url('Soehne-Kraeftig.otf') format('opentype');
+  font-weight: 700; /* Assuming bold */
+  font-style: normal;
+}

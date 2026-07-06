@@ -1,0 +1,259 @@
+{
+  "gridDensity": 41,
+  "colorMode": true,
+  "invertColors": false,
+  "scaleMin": 0,
+  "scaleMax": 47,
+  "scaleVariation": 72,
+  "ringRadius": 252,
+  "ringThickness": 124,
+  "ringInnerSoftness": 119,
+  "ringOuterSoftness": 85,
+  "ringNoise": 0,
+  "ringInnerNoise": 0,
+  "ringOuterNoise": 0,
+  "ringNoiseScale": 0.5,
+  "ringNoiseSeed": 683,
+  "velocityPushAmount": 5,
+  "pushDecay": 0.92,
+  "colourSource": "1",
+  "colourPosition": 1,
+  "hmOrigAmount": 24,
+  "videoBlendEnabled": false,
+  "videoBlendMode": "multiply",
+  "videoBlendAmount": 50,
+  "invertImage": true,
+  "imageHueOffset": 40,
+  "videoScrub": 0,
+  "imageSamplerEnabled": true,
+  "imageMappingMode": "stretch",
+  "imagePositionX": 53,
+  "imagePositionY": 52,
+  "imageScaleX": 223,
+  "imageScaleY": 239,
+  "imageRotation": 87,
+  "imageColorOpacity": 100,
+  "imageBrightnessToScale": true,
+  "imageBrightnessScaleMin": 128,
+  "imageBrightnessScaleMax": 272,
+  "imageSaturationToScale": false,
+  "imageSaturationScaleMin": 0,
+  "imageSaturationScaleMax": 100,
+  "gradientMapEnabled": false,
+  "gradientInterp": "rgb",
+  "gradientSamples": 3,
+  "activeMode": "mode1",
+  "noiseScale": 0.5,
+  "noiseOctaves": 1,
+  "noisePersist": 0,
+  "noiseLac": 1,
+  "noiseSeedX": 0,
+  "noiseSeedY": 0,
+  "noiseLightFreq": 0.5,
+  "heatmapInterp": "smooth",
+  "heatmapInvert": false,
+  "hueLayerEnabled": true,
+  "hueLayerOffset": -178,
+  "hueLayerBlend": "hue",
+  "hueLayerOpacity": 59,
+  "origInterferenceEnabled": false,
+  "hmOrigDriver": "saturation",
+  "hmOutputDriver": "saturation",
+  "hmOrigMix": "wrap",
+  "hmOrigQuant": 0,
+  "hueRemapEnabled": false,
+  "hueRemapStart": 25,
+  "hueRemapEnd": 70,
+  "hueRemapStrength": 37,
+  "hueRemapSatOffset": -28,
+  "hueRemapLightOffset": 15,
+  "hueRemapFalloff": 15,
+  "hueRemap2Enabled": false,
+  "hueRemap2Start": 0,
+  "hueRemap2End": 14,
+  "hueRemap2Strength": 37,
+  "hueRemap2Target": 321,
+  "hueRemap2SatOffset": 1,
+  "hueRemap2LightOffset": -2,
+  "hueRemap2Falloff": 15,
+  "hueGradMapEnabled": false,
+  "hueGradMapStrength": 100,
+  "hueGradMapPreserveLight": true,
+  "hueGradMapPhase": 0,
+  "colorFadeEnabled": true,
+  "colorFadeDriver": "hue",
+  "colorFadeTarget": "#4114e6",
+  "cfFadeStart": 3,
+  "cfFadeEnd": 28,
+  "cfStrength": 75,
+  "cfBlendMode": "add",
+  "cfHueOffset": 0,
+  "colorFade2Enabled": true,
+  "colorFade2Driver": "hue",
+  "colorFade2Target": "#59df20",
+  "cf2FadeStart": 6,
+  "cf2FadeEnd": 33,
+  "cf2Strength": 86,
+  "cf2BlendMode": "hue",
+  "cf2HueOffset": 204,
+  "colorFade3Enabled": true,
+  "colorFade3Driver": "hue",
+  "colorFade3Target": "#d0e52e",
+  "cf3FadeStart": 10,
+  "cf3FadeEnd": 34,
+  "cf3Strength": 52,
+  "cf3BlendMode": "color",
+  "cf3HueOffset": 180,
+  "colorFade4Enabled": true,
+  "colorFade4Driver": "hue",
+  "colorFade4Target": "#c44545",
+  "cf4FadeStart": 0,
+  "cf4FadeEnd": 48,
+  "cf4Strength": 72,
+  "cf4BlendMode": "hue",
+  "cf4HueOffset": 110,
+  "colorSpace": "oklch",
+  "colorGradeEnabled": true,
+  "gradeBlend": "saturation",
+  "gradeTemp": -9,
+  "gradeTint": -95,
+  "gradeSat": 62,
+  "gradeExp": -4,
+  "gradeContrast": 15,
+  "gradeHigh": -46,
+  "gradeShadow": -37,
+  "imgAdjVibrancy": 14,
+  "imgAdjBrightness": -1,
+  "imgAdjContrast": 0,
+  "hueExcludeEnabled": true,
+  "hueExcludeStart": 55,
+  "hueExcludeEnd": 92,
+  "hueConvergenceStrength": 0,
+  "customGradientStops": [
+    {
+      "pos": 0,
+      "color": "#707070"
+    },
+    {
+      "pos": 0.1622,
+      "color": "#616161"
+    },
+    {
+      "pos": 0.2448,
+      "color": "#559190"
+    },
+    {
+      "pos": 0.3274,
+      "color": "#6ecc61"
+    },
+    {
+      "pos": 0.3776,
+      "color": "#dc79a1"
+    },
+    {
+      "pos": 0.5959,
+      "color": "#555791"
+    },
+    {
+      "pos": 0.7493,
+      "color": "#6feca2"
+    },
+    {
+      "pos": 0.8496,
+      "color": "#aed580"
+    },
+    {
+      "pos": 1,
+      "color": "#ffcc00"
+    }
+  ],
+  "hueGradMapStops": [
+    {
+      "pos": 0,
+      "color": "#64737e"
+    },
+    {
+      "pos": 0.16666666666666666,
+      "color": "#48bec5"
+    },
+    {
+      "pos": 0.3333333333333333,
+      "color": "#52c584"
+    },
+    {
+      "pos": 0.5,
+      "color": "#9bad3b"
+    },
+    {
+      "pos": 0.6666666666666666,
+      "color": "#fd817c"
+    },
+    {
+      "pos": 0.8333333333333334,
+      "color": "#e35b6c"
+    },
+    {
+      "pos": 1,
+      "color": "#a06279"
+    }
+  ],
+  "curvePoints": {
+    "master": [
+      {
+        "x": 0,
+        "y": 0
+      },
+      {
+        "x": 0.33476394849785407,
+        "y": 0.0021459227467811592
+      },
+      {
+        "x": 0.7167381974248928,
+        "y": 0.9549356223175965
+      },
+      {
+        "x": 1,
+        "y": 1
+      }
+    ],
+    "red": [
+      {
+        "x": 0,
+        "y": 0
+      },
+      {
+        "x": 1,
+        "y": 1
+      }
+    ],
+    "green": [
+      {
+        "x": 0,
+        "y": 0
+      },
+      {
+        "x": 0.7811158798283262,
+        "y": 0.7553648068669527
+      },
+      {
+        "x": 1,
+        "y": 1
+      }
+    ],
+    "blue": [
+      {
+        "x": 0,
+        "y": 0
+      },
+      {
+        "x": 1,
+        "y": 1
+      }
+    ]
+  },
+  "heatmapColorOrder": [
+    0,
+    1,
+    2
+  ]
+}
