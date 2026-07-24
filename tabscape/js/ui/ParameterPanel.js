@@ -904,7 +904,7 @@ class ParameterPanel extends ParameterPanelBase {
           el.value = clamped;
           const container = el.closest('.parameter');
           const display = container ? container.querySelector('.parameter__value') : null;
-          if (display) display.value = clamped;
+          if (display) display.value = param.formatValue ? param.formatValue(clamped) : clamped;
         }
       });
 
@@ -930,10 +930,17 @@ class ParameterPanel extends ParameterPanelBase {
       extra._defaultTextureProgress = imageSampler.getVideoProgress();
       extra._defaultTexturePaused = !imageSampler.isPlaying;
     }
+    if (window.animationController) {
+      extra._motion = window.animationController.serialize();
+    }
     return extra;
   }
 
   _onSettingsApplied(settings) {
+    if (settings._motion && window.animationController) {
+      window.animationController.restore(settings._motion);
+    }
+
     if (typeof settings._defaultTextureProgress !== 'number') return;
 
     // The default-texture video may still be loading (async) when settings
@@ -1015,8 +1022,9 @@ class ParameterPanel extends ParameterPanelBase {
     // Enable/disable video options when a video is loaded
     this._updateVideoExportOptions = () => {
       const hasVideo = typeof imageSampler !== 'undefined' && imageSampler && imageSampler.hasVideo();
+      const hasMotionTimeline = window.animationController && window.animationController.motionEnabled;
       formatSelect.querySelectorAll('option[data-video-only]').forEach(opt => {
-        opt.disabled = !hasVideo;
+        opt.disabled = !(hasVideo || hasMotionTimeline);
       });
     };
 
@@ -1276,13 +1284,15 @@ class ParameterPanel extends ParameterPanelBase {
   }
 
   _startVideoExport(format) {
-    if (typeof app === 'undefined' || !app.renderer || !imageSampler || !imageSampler.hasVideo()) {
-      alert('Cannot export video: no video loaded or renderer not initialized.');
+    const hasMotionTimeline = window.animationController && window.animationController.motionEnabled;
+    const hasVideo = imageSampler && imageSampler.hasVideo && imageSampler.hasVideo();
+    if (typeof app === 'undefined' || !app.renderer || !imageSampler || !(hasVideo || hasMotionTimeline)) {
+      alert('Cannot export video: no video loaded, no active motion timeline, or renderer not initialized.');
       return;
     }
 
     const fpsSelect = document.getElementById('exportFramerate');
-    const sourceFps = Math.round(imageSampler.videoFramerate) || 30;
+    const sourceFps = hasVideo ? (Math.round(imageSampler.videoFramerate) || 30) : 30;
     const framerate = parseInt(fpsSelect ? fpsSelect.value : '') || sourceFps;
     const resSelect = document.getElementById('exportResolution');
     const size = parseInt(resSelect ? resSelect.value : '') || (format === 'mp4' ? 1080 : 4096);
@@ -1296,6 +1306,7 @@ class ParameterPanel extends ParameterPanelBase {
       p5Instance: app.p5Instance,
       renderer: app.renderer,
       imageSampler: imageSampler,
+      animationController: window.animationController || null,
     });
 
     this._videoExporter.onProgress = (frame, total) => {

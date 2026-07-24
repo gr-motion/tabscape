@@ -349,6 +349,20 @@ class RangeParameter extends Parameter {
     const header = document.createElement('div');
     header.className = 'parameter__header';
     const label = this._createLabel();
+    if (window.animationController) {
+      window.animationController.registerKey(this.startKey, {
+        label: this.label + ' Start',
+        type: 'range',
+        parameter: this
+      });
+      window.animationController.registerKey(this.endKey, {
+        label: this.label + ' End',
+        type: 'range',
+        parameter: this
+      });
+      label.appendChild(this._createMotionToggle(this.startKey, this.label + ' Start'));
+      label.appendChild(this._createMotionToggle(this.endKey, this.label + ' End'));
+    }
     const valueDisplay = document.createElement('span');
     valueDisplay.className = 'parameter__value';
     valueDisplay.textContent = `${this.startDefault} – ${this.endDefault}`;
@@ -395,6 +409,7 @@ class RangeParameter extends Parameter {
       const hi = parseFloat(sliderHigh.value);
       if (lo > hi) { lo = hi; sliderLow.value = lo; }
       stateManager.set(this.startKey, lo);
+      if (window.animationController) window.animationController.recordChange(this.startKey, lo);
       valueDisplay.textContent = `${lo} – ${hi}`;
       updateFill();
     });
@@ -404,6 +419,7 @@ class RangeParameter extends Parameter {
       let hi = parseFloat(sliderHigh.value);
       if (hi < lo) { hi = lo; sliderHigh.value = hi; }
       stateManager.set(this.endKey, hi);
+      if (window.animationController) window.animationController.recordChange(this.endKey, hi);
       valueDisplay.textContent = `${lo} – ${hi}`;
       updateFill();
     });

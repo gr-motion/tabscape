@@ -32,6 +32,13 @@ class WebGLGridRenderer extends GridRenderer {
     this._duotoneCoolTex = null; // unit 6: duo tone cool gradient
     this._loopStartTex = null;  // unit 7: loop-start snapshot for crossfade
     this._cornerSDFTex = null;  // unit 8: squircle corner SDF (Figma smoothing=1)
+    this._prevFrameTex = null;  // unit 9: previous video frame for slow playback blending
+    this._copyFramebuffer = null;
+    this._hasPrevFrameTex = false;
+    this._lastBlendFrameId = null;
+    this._lastBlendVideoTime = 0;
+    this._frameBlendStart = 0;
+    this._frameBlendDuration = 0.1;
 
     this._gradientsDirty = true;
     this._curveLUTDirty = true;
@@ -64,7 +71,7 @@ class WebGLGridRenderer extends GridRenderer {
     // Cache ALL uniform locations
     const uNames = [
       'u_resolution','u_cornerRadius','u_cellAspect','u_cellSize','u_cornerSDF',
-      'u_srcTexture','u_loopStartTexture','u_loopFade','u_hasTexture','u_textureVisible','u_bgLuminance',
+      'u_srcTexture','u_loopStartTexture','u_loopFade','u_prevTexture','u_frameBlend','u_hasTexture','u_textureVisible','u_bgLuminance',
       'u_imageHueOffset',
       'u_scaleHueShiftEnabled','u_scaleHueRange',
       'u_brightnessVariance',
@@ -150,6 +157,7 @@ class WebGLGridRenderer extends GridRenderer {
     this._duotoneCoolTex = this._createTex(gl, gl.LINEAR);
     this._loopStartTex = this._createTex(gl, gl.NEAREST);
     this._cornerSDFTex = this._buildCornerSDFTexture(gl);
+    this._prevFrameTex = this._createTex(gl, gl.NEAREST);
     this._exportTexture = null; // lazily created on first export
     this._exportInProgress = false;
   }
@@ -320,6 +328,36 @@ class WebGLGridRenderer extends GridRenderer {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, imageSampler._pixelBuffer);
     this._texWidth = w; this._texHeight = h;
     return true;
+  }
+
+  _copySourceToPrevFrame(gl) {
+    if (!this._srcTexture || !this._prevFrameTex || !this._texWidth || !this._texHeight) return false;
+
+    const fb = this._copyFramebuffer || (this._copyFramebuffer = gl.createFramebuffer());
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._srcTexture, 0);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return false;
+    }
+
+    gl.readBuffer(gl.COLOR_ATTACHMENT0);
+    gl.activeTexture(gl.TEXTURE9);
+    gl.bindTexture(gl.TEXTURE_2D, this._prevFrameTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, this._texWidth, this._texHeight, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, this._texWidth, this._texHeight);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return true;
+  }
+
+  _getVideoFrameId(videoEl, currentTime) {
+    if (videoEl && videoEl.getVideoPlaybackQuality) {
+      const quality = videoEl.getVideoPlaybackQuality();
+      if (quality && Number.isFinite(quality.totalVideoFrames) && quality.totalVideoFrames > 0) {
+        return quality.totalVideoFrames;
+      }
+    }
+    return Math.round((currentTime || 0) * 24);
   }
 
   _buildGradientData(stops, width) {
@@ -553,6 +591,19 @@ class WebGLGridRenderer extends GridRenderer {
         if (imageSampler.isVideo && imageSampler.video && imageSampler.video.elt.readyState >= 2) {
           // Upload video element directly to GPU — avoids expensive CPU pixel copy
           const vid = imageSampler.video.elt;
+          const ct = imageSampler.getVideoTime();
+          const frameId = this._getVideoFrameId(vid, ct);
+          const maxRate = state.extendScope ? 3 : 1;
+          const rate = Math.max(0.45, Math.min(maxRate, parseFloat(state.texturePlaybackSpeed) || 1));
+          if (rate < 0.999 && this._lastBlendFrameId != null && frameId !== this._lastBlendFrameId) {
+            this._hasPrevFrameTex = this._copySourceToPrevFrame(gl);
+            this._frameBlendStart = performance.now();
+            const videoDelta = Math.abs(ct - this._lastBlendVideoTime) || (1 / 24);
+            const lowSpeedBoost = rate < 0.4
+              ? 1 + ((0.4 - rate) / 0.3) * 0.65
+              : 1;
+            this._frameBlendDuration = Math.max(0.08, Math.min(1.2, (videoDelta / rate) * lowSpeedBoost));
+          }
           const t0 = performance.now();
           gl.activeTexture(gl.TEXTURE0);
           gl.bindTexture(gl.TEXTURE_2D, this._srcTexture);
@@ -563,7 +614,6 @@ class WebGLGridRenderer extends GridRenderer {
           texReady = true;
 
           // Update CPU pixel buffer at reduced rate for color caching
-          const ct = imageSampler.getVideoTime();
           let tCpu = 0;
           if (!this._lastCpuBufferTime || Math.abs(ct - this._lastCpuBufferTime) > 0.1) {
             const t1 = performance.now();
@@ -591,6 +641,8 @@ class WebGLGridRenderer extends GridRenderer {
             this._vidPerfCount = 0;
             this._vidPerfSum = { tex: 0, cpu: 0, total: 0 };
           }
+          this._lastBlendFrameId = frameId;
+          this._lastBlendVideoTime = ct;
         } else {
           // Static image or video not ready: use pixel buffer path
           if (imageSampler.isVideo) {
@@ -660,7 +712,8 @@ class WebGLGridRenderer extends GridRenderer {
     const maskMode = state.maskMode || 'tabloop';
     let maskValues = null;
     if (maskMode === 'tabloop' && this._maskProcessor) {
-      maskValues = this._maskProcessor.computeRingMask(cols, rows, this._posX, this._posY, cubeWidth, cubeHeight, canvasWidth, canvasHeight, state, layoutW, layoutH);
+      const maskEvolutionPhase = this._getMaskEvolutionPhase(state);
+      maskValues = this._maskProcessor.computeRingMask(cols, rows, this._posX, this._posY, cubeWidth, cubeHeight, canvasWidth, canvasHeight, state, layoutW, layoutH, maskEvolutionPhase);
     } else if (maskMode === 'custom') {
       const hasMaskProc = !!this._maskProcessor;
       const hasMaskSampler = typeof maskSampler !== 'undefined' && !!maskSampler;
@@ -677,20 +730,13 @@ class WebGLGridRenderer extends GridRenderer {
         setTimeout(() => { this._maskLogDone = false; }, 2000);
       }
       if (hasMaskProc && maskHasImage) {
-        // Pixel-absolute mask: anchor the mask image to a fixed-pixel rect
-        // centered on canvas (size = pre-surfaceScale dims). Cubes inside
-        // the rect sample the mask; cubes outside fall out of UV [0,1] and
-        // resolve to 0. As canvas/cubes grow with textureScale the mask's
-        // on-screen footprint stays the same, matching tabloop's behavior.
-        const maskRefW = (this._layoutMaskRef && this._layoutMaskRef.w) || layoutW;
-        const maskRefH = (this._layoutMaskRef && this._layoutMaskRef.h) || layoutH;
-        const maskRectLeft = (canvasWidth - maskRefW) / 2;
-        const maskRectTop = (canvasHeight - maskRefH) / 2;
-        const maskSamplerOffsetX = offsetX - maskRectLeft;
-        const maskSamplerOffsetY = offsetY - maskRectTop;
-        maskSampler.setTransform(50, 50, 100, 100, 0);
-        maskSampler.setGridViewport(maskSamplerOffsetX, maskSamplerOffsetY, totalWidth, totalHeight, maskRefW, maskRefH);
-        maskValues = this._maskProcessor.computeCustomMask(cols, rows, this._posX, this._posY, cubeWidth, cubeHeight, maskRefW, maskRefH, maskSampler, state.maskChannel || 'luminance', state.maskInvert || false, (state.maskSoftness ?? 0) / 100);
+        const syncMask = state.maskSyncWithTexture !== false;
+        const maskPosX = syncMask ? (state.texturePositionX ?? 0) : (state.maskPositionX ?? 0);
+        const maskPosY = syncMask ? (state.texturePositionY ?? 0) : (state.maskPositionY ?? 0);
+        const maskScale = syncMask ? (state.textureScale ?? 100) : (state.maskScale ?? 100);
+        maskSampler.setTransform(50 - maskPosX, 50 - maskPosY, maskScale, maskScale, 0);
+        maskSampler.setGridViewport(samplerOffsetX, samplerOffsetY, totalWidth, totalHeight, layoutW, layoutH);
+        maskValues = this._maskProcessor.computeCustomMask(cols, rows, this._posX, this._posY, cubeWidth, cubeHeight, layoutW, layoutH, maskSampler, state.maskChannel || 'luminance', state.maskInvert || false, (state.maskSoftness ?? 0) / 100);
         if (!this._maskValLogDone) {
           const vals = maskValues;
           let min = 1, max = 0, sum = 0;
@@ -737,29 +783,6 @@ class WebGLGridRenderer extends GridRenderer {
       }
     }
 
-    // Compute mask image's fitted bounds on canvas (UV space) for texture clipping
-    let maskClipU0 = 0, maskClipU1 = 1, maskClipV0 = 0, maskClipV1 = 1;
-    let hasMaskClip = false;
-    if (maskMode === 'custom' && typeof maskSampler !== 'undefined' && maskSampler && maskSampler.isLoaded && maskSampler._bufferWidth) {
-      const maskW = maskSampler._bufferWidth;
-      const maskH = maskSampler._bufferHeight;
-      const maskAspect = maskW / maskH;
-      // Use the layout-frame canvasAspect computed above so live and export
-      // clip the same.
-      if (maskAspect > canvasAspect) {
-        // Mask wider than canvas — letterbox vertically
-        const vScale = canvasAspect / maskAspect;
-        maskClipV0 = (1 - vScale) / 2;
-        maskClipV1 = 1 - maskClipV0;
-      } else {
-        // Mask taller than canvas — pillarbox horizontally
-        const uScale = maskAspect / canvasAspect;
-        maskClipU0 = (1 - uScale) / 2;
-        maskClipU1 = 1 - maskClipU0;
-      }
-      hasMaskClip = true;
-    }
-
     // ── Build instance buffer ──
     this._ensureInstanceCapacity(gridSize);
     const data = this._instanceData;
@@ -785,13 +808,6 @@ class WebGLGridRenderer extends GridRenderer {
         if (maskValues) imageScale *= maskValues[index];
         // Note: Scale Dark/Light applied in vertex shader
         if (imageScale * manualScale < 0.001) continue;
-
-        // Clip to mask image bounds (overflow hidden)
-        if (hasMaskClip) {
-          const cellU = vpOU + gridU * vpSU;
-          const cellV = vpOV + gridV * vpSV;
-          if (cellU < maskClipU0 || cellU > maskClipU1 || cellV < maskClipV0 || cellV > maskClipV1) continue;
-        }
 
         // Compute texture UV
         let texU = -1, texV = -1;
@@ -868,6 +884,7 @@ class WebGLGridRenderer extends GridRenderer {
     gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, this._duotoneCoolTex);
     gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, this._loopStartTex);
     gl.activeTexture(gl.TEXTURE8); gl.bindTexture(gl.TEXTURE_2D, this._cornerSDFTex);
+    gl.activeTexture(gl.TEXTURE9); gl.bindTexture(gl.TEXTURE_2D, this._prevFrameTex);
 
     // Upload loop crossfade texture directly from clone video element
     let loopFade = (typeof app !== 'undefined' && app._loopFadeAmount) || 0;
@@ -880,9 +897,17 @@ class WebGLGridRenderer extends GridRenderer {
     }
 
     // Sampler uniforms
+    let frameBlend = 1;
+    if (!overrideSourceTexture && this._hasPrevFrameTex && this._frameBlendStart && this._frameBlendDuration > 0) {
+      const rawBlend = Math.max(0, Math.min(1, (performance.now() - this._frameBlendStart) / (this._frameBlendDuration * 1000)));
+      frameBlend = rawBlend * rawBlend * (3 - 2 * rawBlend);
+      if (frameBlend >= 1) this._hasPrevFrameTex = false;
+    }
     gl.uniform1i(u.u_srcTexture, 0);
     gl.uniform1i(u.u_loopStartTexture, 7);
     gl.uniform1f(u.u_loopFade, loopFade);
+    gl.uniform1i(u.u_prevTexture, 9);
+    gl.uniform1f(u.u_frameBlend, frameBlend);
     gl.uniform1i(u.u_customGradient, 1);
     gl.uniform1i(u.u_heatmapGradient, 2);
     gl.uniform1i(u.u_hueGradMapTex, 3);
@@ -1333,6 +1358,9 @@ class WebGLGridRenderer extends GridRenderer {
      this._curveLUTTex && gl.deleteTexture(this._curveLUTTex),
      this._duotoneWarmTex && gl.deleteTexture(this._duotoneWarmTex),
      this._duotoneCoolTex && gl.deleteTexture(this._duotoneCoolTex),
+     this._loopStartTex && gl.deleteTexture(this._loopStartTex),
+     this._prevFrameTex && gl.deleteTexture(this._prevFrameTex),
+     this._copyFramebuffer && gl.deleteFramebuffer(this._copyFramebuffer),
      this._cornerSDFTex && gl.deleteTexture(this._cornerSDFTex)];
     this._gl = null; this._glCanvas = null; this._webglAvailable = false;
   }
@@ -1359,6 +1387,8 @@ uniform vec2 u_cellSize;
 uniform sampler2D u_srcTexture;
 uniform sampler2D u_loopStartTexture;
 uniform float u_loopFade;
+uniform sampler2D u_prevTexture;
+uniform float u_frameBlend;
 uniform int u_hasTexture;
 uniform float u_imgScaleMin;
 uniform float u_imgScaleMax;
@@ -1368,6 +1398,14 @@ flat out vec2 v_texUV;
 flat out vec2 v_gridUV;
 flat out float v_imageScale;
 flat out float v_manualScale;
+
+vec4 sampleSourceTexture(vec2 uv) {
+  vec4 current = texture(u_srcTexture, uv);
+  if (u_frameBlend < 1.0) {
+    return mix(texture(u_prevTexture, uv), current, u_frameBlend);
+  }
+  return current;
+}
 
 void main() {
   v_uv = a_position + 0.5;
@@ -1379,7 +1417,7 @@ void main() {
 
   // Scale Dark / Scale Light: modulate scale by texture brightness
   if (u_hasTexture == 1 && a_texUV.x >= 0.0) {
-    vec4 texSample = texture(u_srcTexture, a_texUV);
+    vec4 texSample = sampleSourceTexture(a_texUV);
     if (texSample.a < 0.5) { gl_Position = vec4(2.0, 2.0, 0.0, 1.0); return; } // discard transparent
     vec3 tc = texSample.rgb;
     if (u_loopFade > 0.0) {
@@ -1423,6 +1461,8 @@ uniform sampler2D u_cornerSDF;
 uniform sampler2D u_srcTexture;
 uniform sampler2D u_loopStartTexture;
 uniform float u_loopFade;
+uniform sampler2D u_prevTexture;
+uniform float u_frameBlend;
 uniform int u_hasTexture;
 uniform int u_textureVisible;
 uniform float u_bgLuminance;
@@ -1593,6 +1633,14 @@ vec3 oklchToRgb(vec3 hsl) {
 vec3 toP(vec3 c){return u_colorSpace==1?rgbToOklch(c):rgbToHsl(c);}
 vec3 fromP(vec3 h){return u_colorSpace==1?oklchToRgb(h):hslToRgb(h);}
 
+vec4 sampleSourceTexture(vec2 uv) {
+  vec4 current = texture(u_srcTexture, uv);
+  if (u_frameBlend < 1.0) {
+    return mix(texture(u_prevTexture, uv), current, u_frameBlend);
+  }
+  return current;
+}
+
 // ═══ Simplex 3D Noise ══════════════════════════════════════
 
 vec3 _mod289v(vec3 x){return x-floor(x*(1.0/289.0))*289.0;}
@@ -1762,7 +1810,7 @@ void main() {
 
   // ── Texture Sampling ──
   if(u_hasTexture==1 && v_texUV.x>=0.0) {
-    vec4 tx = texture(u_srcTexture, v_texUV);
+    vec4 tx = sampleSourceTexture(v_texUV);
     if (tx.a < 0.5) discard;
     vec3 tc = tx.rgb;
     if (u_loopFade > 0.0) {

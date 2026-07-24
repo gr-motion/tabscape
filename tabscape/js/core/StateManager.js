@@ -22,6 +22,7 @@ class StateManager {
     // Keys excluded from history (transient / derived state)
     this._historyExclude = new Set([
       'videoScrub', 'loopDuration',
+      '_locks', '_motion', '_defaultTextureProgress', '_defaultTexturePaused',
       // Derived keys set by cascade subscribers — the source params cover these
       'postFadeEnabled', 'postFadeDriver', 'postFadeEnd', 'postFadeStrength',
       'maskRingInnerNoise', 'maskRingOuterNoise', 'maskRingNoiseScale',
@@ -69,13 +70,13 @@ class StateManager {
    * @param {string} key
    * @param {any} value
    */
-  set(key, value) {
+  set(key, value, options = {}) {
     const oldValue = this._state[key];
     if (oldValue === value) return;
 
     // Push history for non-excluded, non-restore, non-batch single changes.
     // Coalesce rapid changes to the same key (e.g. slider drags) into one entry.
-    if (!this._isRestoring && !this._historyExclude.has(key) && this._batchDepth === 0) {
+    if (!options.skipHistory && !this._isRestoring && !this._historyExclude.has(key) && this._batchDepth === 0) {
       if (this._coalesceKey === key && this._coalesceTimer) {
         // Same key changed again quickly — reuse the already-pushed snapshot,
         // just reset the debounce timer.

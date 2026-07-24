@@ -14,16 +14,24 @@ class App {
     this._attractorMode = null;
     this._activeModeName = 'ripple';
     this.realtimeRecorder = new RealtimeRecorder();
+    this.animationController = null;
+    this._isSyncingMaskTextureTransform = false;
   }
 
   /**
    * Initialize the application
    */
   async init() {
+    // Initialize animation controller before rendering parameters so controls
+    // can register keyframe buttons as they are created.
+    this.animationController = new AnimationController();
+    window.animationController = this.animationController;
+
     // Initialize parameter panel
     this.parameterPanel = new ParameterPanel('parameter-panel');
     this.parameterPanel.registerParameters(PARAMETER_CONFIG);
     this.parameterPanel.render();
+    this.animationController.init(this);
 
     // Load default settings override if present
     await this._loadDefaultSettings();
@@ -53,15 +61,15 @@ class App {
     // Subscribe to mask mode changes for parameter visibility
     stateManager.subscribe('maskMode', (mode) => this._updateMaskVisibility(mode));
     this._updateMaskVisibility(stateManager.get('maskMode') || 'tabloop');
+    this._setupMaskTextureSync();
 
     // Mask noise preset → set hidden noise params
     stateManager.subscribe('maskNoise', (value) => {
       if (this.isLoadingSettings) return;
-      const v = parseInt(value) || 0;
+      const v = parseFloat(value) || 0;
       stateManager.set('maskRingInnerNoise', v);
       stateManager.set('maskRingOuterNoise', v);
-      const scaleMap = { 0: 0.5, 33: 0.5, 66: 0.6, 99: 0.8 };
-      stateManager.set('maskRingNoiseScale', scaleMap[v] ?? 0.5);
+      stateManager.set('maskRingNoiseScale', this._getMaskNoiseScale(v));
     });
 
     // fadeToGrey: desaturate tabs below scaleMin (mask-shrunk tabs)
@@ -108,7 +116,26 @@ class App {
       this._updateTextureVisibility(mode);
       this._applyTextureMode(mode);
     });
+    stateManager.subscribe('texturePlaybackSpeed', (speed) => {
+      this._applyTexturePlaybackSpeed(speed);
+      this._syncLoopDuration();
+    });
+    stateManager.subscribe('extendScope', () => {
+      this._updateSliderScopes();
+      this._applyTexturePlaybackSpeed();
+      this._syncLoopDuration();
+    });
+    stateManager.subscribeAll((key, value) => {
+      if (key === 'extendScope' || key === '__undoRedo') return;
+      const param = this.parameterPanel && this.parameterPanel.getParameter
+        ? this.parameterPanel.getParameter(key)
+        : null;
+      if (param && param.type === 'slider') {
+        this._updateSliderScopeWarning(param, key, value);
+      }
+    });
     this._updateTextureVisibility(stateManager.get('textureMode') || 'default');
+    this._updateSliderScopes();
 
     // Auto-load default texture on startup
     this._defaultTextureLoaded = false;
@@ -124,6 +151,85 @@ class App {
 
     this.isInitialized = true;
     console.log('Tabscape initialized');
+  }
+
+  _getMaskNoiseScale(value) {
+    const stops = [
+      { value: 0, scale: 0.5 },
+      { value: 33, scale: 0.5 },
+      { value: 66, scale: 0.6 },
+      { value: 99, scale: 0.8 }
+    ];
+    const v = Math.max(stops[0].value, Math.min(stops[stops.length - 1].value, value));
+    for (let i = 0; i < stops.length - 1; i++) {
+      const a = stops[i];
+      const b = stops[i + 1];
+      if (v >= a.value && v <= b.value) {
+        const range = b.value - a.value;
+        const t = range === 0 ? 0 : (v - a.value) / range;
+        return a.scale + (b.scale - a.scale) * t;
+      }
+    }
+    return stops[stops.length - 1].scale;
+  }
+
+  _setupMaskTextureSync() {
+    stateManager.subscribe('maskSyncWithTexture', (enabled) => {
+      if (enabled) this._syncMaskTransformFromTexture();
+    });
+
+    ['texturePositionX', 'texturePositionY', 'textureScale'].forEach(key => {
+      stateManager.subscribe(key, () => {
+        if (stateManager.get('maskSyncWithTexture')) this._syncMaskTransformFromTexture();
+      });
+    });
+
+    ['maskPositionX', 'maskPositionY', 'maskScale'].forEach(key => {
+      stateManager.subscribe(key, () => {
+        if (stateManager.get('maskSyncWithTexture')) this._syncTextureTransformFromMask();
+      });
+    });
+
+    if (stateManager.get('maskSyncWithTexture')) this._syncMaskTransformFromTexture();
+  }
+
+  _setLinkedParameterValue(key, value) {
+    stateManager.set(key, value, { skipHistory: true });
+    const param = this.parameterPanel && this.parameterPanel.getParameter
+      ? this.parameterPanel.getParameter(key)
+      : null;
+    if (param) param.value = value;
+
+    const el = document.getElementById(key);
+    if (!el) return;
+    if (el.type === 'checkbox') el.checked = !!value;
+    else el.value = value;
+
+    const row = el.closest('.parameter');
+    const display = row ? row.querySelector('.parameter__value') : null;
+    if (display) {
+      const displayValue = param && param.formatValue ? param.formatValue(value) : value;
+      if (display.tagName === 'INPUT') display.value = displayValue;
+      else display.textContent = displayValue;
+    }
+  }
+
+  _syncMaskTransformFromTexture() {
+    if (this._isSyncingMaskTextureTransform) return;
+    this._isSyncingMaskTextureTransform = true;
+    this._setLinkedParameterValue('maskPositionX', stateManager.get('texturePositionX') ?? 0);
+    this._setLinkedParameterValue('maskPositionY', stateManager.get('texturePositionY') ?? 0);
+    this._setLinkedParameterValue('maskScale', stateManager.get('textureScale') ?? 100);
+    this._isSyncingMaskTextureTransform = false;
+  }
+
+  _syncTextureTransformFromMask() {
+    if (this._isSyncingMaskTextureTransform) return;
+    this._isSyncingMaskTextureTransform = true;
+    this._setLinkedParameterValue('texturePositionX', stateManager.get('maskPositionX') ?? 0);
+    this._setLinkedParameterValue('texturePositionY', stateManager.get('maskPositionY') ?? 0);
+    this._setLinkedParameterValue('textureScale', stateManager.get('maskScale') ?? 100);
+    this._isSyncingMaskTextureTransform = false;
   }
 
   _setupGlobalJsonDrop() {
@@ -340,6 +446,7 @@ class App {
               clone.crossOrigin = 'anonymous';
               clone.muted = true;
               clone.playsInline = true;
+              clone.playbackRate = self._getTexturePlaybackRate();
               clone.currentTime = 0;
               clone.play();
               self._fadeClone = clone;
@@ -502,8 +609,9 @@ class App {
       if (container) {
         const display = container.querySelector('.parameter__value');
         if (display) {
-          if (display.tagName === 'INPUT') display.value = value;
-          else display.textContent = value;
+          const displayValue = param.formatValue ? param.formatValue(value) : value;
+          if (display.tagName === 'INPUT') display.value = displayValue;
+          else display.textContent = displayValue;
         }
       }
 
@@ -531,6 +639,8 @@ class App {
         hiEl.dispatchEvent(new Event('input'));
       }
     });
+
+    this._updateSliderScopes();
   }
 
   /**
@@ -693,6 +803,8 @@ class App {
 
     // Show/hide mode-specific params
     setVisible('imageSource', mode === 'custom');
+    setVisible('texturePlaybackSpeed', mode === 'default');
+    this._updateSliderScopes();
     // Create default video controls once, then show/hide
     if (!this._defaultVideoControls) {
       this._createDefaultVideoControls();
@@ -878,6 +990,83 @@ class App {
     }
   }
 
+  _getTexturePlaybackRate(value = stateManager.get('texturePlaybackSpeed')) {
+    const max = stateManager.get('extendScope') ? 3 : 1;
+    return Math.max(0.45, Math.min(max, parseFloat(value) || 1));
+  }
+
+  _updateSliderScopes() {
+    if (!this.parameterPanel || !this.parameterPanel.parameters) return;
+    const factor = stateManager.get('extendScope') ? 3 : 1;
+
+    this.parameterPanel.parameters.forEach((param, key) => {
+      if (!param || param.type !== 'slider') return;
+
+      const baseMin = param.baseMin ?? param.min ?? 0;
+      const baseMax = param.baseMax ?? param.max ?? 100;
+      const nextMin = factor > 1 && key === 'maskRingRadius'
+        ? 0
+        : (factor > 1 && baseMin < 0 ? baseMin * factor : baseMin);
+      const nextMax = factor > 1 && key === 'maskRingRadius'
+        ? 1000
+        : (factor > 1 && baseMax > 0 ? baseMax * factor : baseMax);
+      param.min = nextMin;
+      param.max = nextMax;
+
+      const slider = document.getElementById(key);
+      if (slider) {
+        slider.min = nextMin;
+        slider.max = nextMax;
+      }
+
+      const current = parseFloat(stateManager.get(key));
+      if (!Number.isFinite(current)) return;
+      const clamped = Math.max(nextMin, Math.min(nextMax, current));
+      if (clamped !== current) {
+        param.value = clamped;
+        stateManager.set(key, clamped, { skipHistory: true });
+        if (slider) slider.value = clamped;
+        const row = slider ? slider.closest('.parameter') : null;
+        const display = row ? row.querySelector('.parameter__value') : null;
+        if (display) {
+          const displayValue = param.formatValue ? param.formatValue(clamped) : clamped;
+          if (display.tagName === 'INPUT') display.value = displayValue;
+          else display.textContent = displayValue;
+        }
+      }
+      this._updateSliderScopeWarning(param, key, clamped);
+    });
+  }
+
+  _updateSliderScopeWarning(param, key, value = stateManager.get(key)) {
+    const slider = document.getElementById(key);
+    const row = slider ? slider.closest('.parameter') : param._container;
+    if (!row) return;
+
+    const baseMin = param.baseMin ?? param.min ?? 0;
+    const baseMax = param.baseMax ?? param.max ?? 100;
+    const numeric = parseFloat(value);
+    const isExtended = !!stateManager.get('extendScope');
+    const isOutOfBaseScope = isExtended
+      && Number.isFinite(numeric)
+      && (numeric < baseMin || numeric > baseMax);
+
+    row.classList.toggle('parameter--outside-base-scope', isOutOfBaseScope);
+    if (slider) {
+      slider.classList.toggle('parameter__slider--outside-base-scope', isOutOfBaseScope);
+    }
+  }
+
+  _applyTexturePlaybackSpeed(speed = stateManager.get('texturePlaybackSpeed')) {
+    const rate = this._getTexturePlaybackRate(speed);
+    if (imageSampler && imageSampler.video && imageSampler.video.elt) {
+      imageSampler.video.elt.playbackRate = rate;
+    }
+    if (this._fadeClone) {
+      this._fadeClone.playbackRate = rate;
+    }
+  }
+
   /**
    * Sync the motion loopDuration to match the current texture source,
    * scaled by the loopTrim percentage.
@@ -894,6 +1083,10 @@ class App {
 
     const trim = (stateManager.get('loopTrim') ?? 100) / 100;
     duration *= trim;
+    if (imageSampler && imageSampler.hasVideo()) {
+      const rate = this._getTexturePlaybackRate();
+      duration /= rate;
+    }
 
     stateManager.set('loopDuration', duration);
 
@@ -930,6 +1123,7 @@ class App {
     imageSampler.loadMedia('assets/looping_texture.mp4').then(() => {
       this._defaultTextureLoaded = true;
       stateManager.set('imageSamplerEnabled', true);
+      this._applyTexturePlaybackSpeed();
       this.fitCanvasToTexture();
       if (imageSampler.hasVideo()) {
         imageSampler.pause();
@@ -1014,10 +1208,15 @@ class App {
     setVisible('maskInnerSoftness', isTabLoop);
     setVisible('maskOuterSoftness', isTabLoop);
     setVisible('maskNoise', isTabLoop);
+    setVisible('maskNoiseEvolutionSpeed', isTabLoop);
     setVisible('maskNoiseSeed', isTabLoop);
 
     // Custom params
     setVisible('maskCustomImage', isCustom);
+    setVisible('maskSyncWithTexture', isCustom);
+    setVisible('maskPositionX', isCustom);
+    setVisible('maskPositionY', isCustom);
+    setVisible('maskScale', isCustom);
     setVisible('maskChannel', isCustom);
     setVisible('maskInvert', isCustom);
     setVisible('maskSoftness', isCustom);

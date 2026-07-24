@@ -11,11 +11,13 @@ class VideoExporter {
    * @param {p5}            opts.p5Instance   - The main p5 instance (needed for createGraphics)
    * @param {GridRenderer}  opts.renderer      - The grid renderer (has renderToTarget)
    * @param {ImageSampler}  opts.imageSampler  - The image sampler (has prepareFrameForExport, seek)
+   * @param {AnimationController} [opts.animationController] - Optional motion timeline controller
    */
-  constructor({ p5Instance, renderer, imageSampler }) {
+  constructor({ p5Instance, renderer, imageSampler, animationController = null }) {
     this.p = p5Instance;
     this.renderer = renderer;
     this.sampler = imageSampler;
+    this.animationController = animationController;
     this._cancelled = false;
 
     // Callbacks
@@ -78,6 +80,7 @@ class VideoExporter {
     const frozenTime = wasPlaying ? null : this.sampler.getVideoTime();
     this.sampler.pause();
     this.renderer._exportInProgress = true;
+    const motionCtx = this._beginMotionExport(duration);
     this._startExportClock();
 
     const gfx = this.p.createGraphics(width, height);
@@ -95,15 +98,18 @@ class VideoExporter {
     let writeError = null;
 
     // Pre-roll one full loop so push offsets and ripples reach periodic steady state
-    this._preRoll(totalFrames, frameDuration);
+    this._preRoll(totalFrames, frameDuration, duration);
+    this._prepareFirstExportFrame(duration);
 
     try {
       for (let i = 0; i < totalFrames; i++) {
         if (this._cancelled || writeError) break;
 
-        const time = frozenTime != null ? frozenTime : Math.min(i * frameDuration, duration - 0.001);
+        const exportTime = Math.min(i * frameDuration, duration - 0.001);
+        const time = frozenTime != null ? frozenTime : this._getSamplerTimeForExport(exportTime);
         await this._seekAndWait(time);
 
+        this._applyMotionExportTime(exportTime, duration);
         this._advanceExportFrame(frameDuration);
         this.renderer.updateForExport(frameDuration);
         this._renderFrameToGraphics(gfx, width, height, true);
@@ -152,6 +158,7 @@ class VideoExporter {
       pool.terminate();
       gfx.remove();
       this._stopExportClock();
+      this._endMotionExport(motionCtx);
       this.renderer._exportInProgress = false;
       if (wasPlaying) this.sampler.play(); else this.sampler.pause();
       if (this.onComplete) this.onComplete();
@@ -213,6 +220,7 @@ class VideoExporter {
     const frozenTime = wasPlaying ? null : this.sampler.getVideoTime();
     this.sampler.pause();
     this.renderer._exportInProgress = true;
+    const motionCtx = this._beginMotionExport(duration);
     this._startExportClock();
 
     // Create offscreen buffer
@@ -230,6 +238,11 @@ class VideoExporter {
       const msg = `Browser cannot encode H.264 at ${width}x${height}. Try a smaller resolution or use PNG Sequence.`;
       if (this.onError) this.onError(new Error(msg));
       gfx.remove();
+      this._stopExportClock();
+      this._endMotionExport(motionCtx);
+      this.renderer._exportInProgress = false;
+      if (wasPlaying) this.sampler.play(); else this.sampler.pause();
+      if (this.onComplete) this.onComplete();
       return;
     }
 
@@ -254,16 +267,19 @@ class VideoExporter {
     encoder.configure(encoderConfig);
 
     // Pre-roll one full loop so push offsets and ripples reach periodic steady state
-    this._preRoll(totalFrames, frameDuration);
+    this._preRoll(totalFrames, frameDuration, duration);
+    this._prepareFirstExportFrame(duration);
 
     try {
       for (let i = 0; i < totalFrames; i++) {
         if (this._cancelled || encoderError) break;
 
-        const time = frozenTime != null ? frozenTime : Math.min(i * frameDuration, duration - 0.001);
+        const exportTime = Math.min(i * frameDuration, duration - 0.001);
+        const time = frozenTime != null ? frozenTime : this._getSamplerTimeForExport(exportTime);
         await this._seekAndWait(time);
 
         // Advance ripples on deterministic clock, then drive mode update
+        this._applyMotionExportTime(exportTime, duration);
         this._advanceExportFrame(frameDuration);
         this.renderer.updateForExport(frameDuration);
         this._renderFrameToGraphics(gfx, width, height, false);
@@ -297,6 +313,7 @@ class VideoExporter {
       try { encoder.close(); } catch (_) {}
       gfx.remove();
       this._stopExportClock();
+      this._endMotionExport(motionCtx);
       this.renderer._exportInProgress = false;
       if (wasPlaying) this.sampler.play(); else this.sampler.pause();
       if (this.onComplete) this.onComplete();
@@ -475,7 +492,7 @@ class VideoExporter {
    * converge to their periodic steady state (seamless loop).
    * Uses the faster decay rate between push decay and spring damping.
    */
-  _preRoll(totalFrames, frameDuration) {
+  _preRoll(totalFrames, frameDuration, duration = 0) {
     const state = typeof stateManager !== 'undefined' ? stateManager.getRef() : {};
     const pushDecay = state.pushDecay || 0.92;
     const springDamping = state.springDamping || 0.87;
@@ -488,16 +505,89 @@ class VideoExporter {
     ));
     const total = passes * totalFrames;
     for (let i = 0; i < total; i++) {
+      if (duration > 0) {
+        this._applyMotionExportTime((i % totalFrames) * frameDuration, duration);
+      }
       this._advanceExportFrame(frameDuration);
       this.renderer.updateForExport(frameDuration);
     }
   }
 
-  /** Use loopDuration if set, otherwise fall back to video duration. */
+  _prepareFirstExportFrame(duration) {
+    this._applyMotionExportTime(0, duration);
+    this._syncRendererSmoothState();
+  }
+
+  /** Use motion timeline duration when active, then loopDuration/video duration. */
   _getExportDuration() {
+    if (this._hasActiveMotionTimeline()) {
+      const motionDuration = this.animationController.duration;
+      if (motionDuration && motionDuration > 0) return motionDuration;
+    }
     const loopDur = typeof stateManager !== 'undefined' ? stateManager.get('loopDuration') : 0;
     if (loopDur && loopDur > 0) return loopDur;
     return this.sampler.getVideoDuration();
+  }
+
+  _hasActiveMotionTimeline() {
+    return !!(this.animationController && this.animationController.motionEnabled);
+  }
+
+  _beginMotionExport(duration) {
+    if (!this._hasActiveMotionTimeline()) return null;
+
+    const ctx = {
+      currentTime: this.animationController.currentTime,
+      wasPlaying: this.animationController.isPlaying,
+      loopDuration: typeof stateManager !== 'undefined' ? stateManager.get('loopDuration') : undefined,
+    };
+
+    this.animationController.pause();
+    if (typeof stateManager !== 'undefined' && duration > 0) {
+      stateManager.set('loopDuration', duration, { skipHistory: true });
+    }
+    this._applyMotionExportTime(0, duration);
+    return ctx;
+  }
+
+  _applyMotionExportTime(time, duration) {
+    if (!this._hasActiveMotionTimeline()) return;
+    const safeDuration = duration || this.animationController.duration || 0;
+    const t = safeDuration > 0 ? Math.max(0, Math.min(safeDuration, time % safeDuration)) : 0;
+    this.animationController.setCurrentTime(t);
+  }
+
+  _endMotionExport(ctx) {
+    if (!ctx || !this.animationController) return;
+
+    if (typeof stateManager !== 'undefined' && ctx.loopDuration !== undefined) {
+      stateManager.set('loopDuration', ctx.loopDuration, { skipHistory: true });
+    }
+
+    this.animationController.setCurrentTime(ctx.currentTime);
+    if (ctx.wasPlaying) this.animationController.play();
+  }
+
+  _syncRendererSmoothState() {
+    if (!this.renderer || !this.renderer._smoothState || !this.renderer._smoothParams) return;
+    const state = typeof stateManager !== 'undefined' ? stateManager.getRef() : {};
+    for (const key in this.renderer._smoothParams) {
+      const value = parseFloat(state[key]);
+      if (!Number.isNaN(value)) this.renderer._smoothState[key] = value;
+    }
+  }
+
+  _getSamplerTimeForExport(exportTime) {
+    if (!this.sampler || !this.sampler.hasVideo || !this.sampler.hasVideo()) return 0;
+    const videoDuration = this.sampler.getVideoDuration();
+    if (!(videoDuration > 0 && isFinite(videoDuration))) return 0;
+    const trim = typeof stateManager !== 'undefined' ? ((stateManager.get('loopTrim') ?? 100) / 100) : 1;
+    const effectiveDuration = Math.max(0.001, videoDuration * trim);
+    const maxRate = typeof stateManager !== 'undefined' && stateManager.get('extendScope') ? 3 : 1;
+    const rate = typeof stateManager !== 'undefined'
+      ? Math.max(0.45, Math.min(maxRate, parseFloat(stateManager.get('texturePlaybackSpeed')) || 1))
+      : 1;
+    return (exportTime * rate) % effectiveDuration;
   }
 
   /** Human-readable timestamp for export filenames: YYYY-MM-DD-HHmmss */

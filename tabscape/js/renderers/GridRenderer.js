@@ -8,6 +8,9 @@ class GridRenderer {
     this.p = p5Instance;
     this.shapes = [];
     this.time = 0;
+    this._noiseEvolutionPhase = 0;
+    this._lastNoiseEvolutionTick = 0;
+    this._lastNoiseEvolutionRenderTime = 0;
 
     // Cache for grid offset
     this._gridOffset = { x: 0, y: 0 };
@@ -255,6 +258,32 @@ class GridRenderer {
    */
   _smooth(key, rawValue) {
     return this._smoothState[key] != null ? this._smoothState[key] : rawValue;
+  }
+
+  _getMaskEvolutionPhase(state) {
+    const speed = Math.max(0, Math.min(1, parseFloat(state.maskNoiseEvolutionSpeed) || 0));
+
+    if (this._exportInProgress) {
+      const renderTime = Math.max(0, this.time || 0);
+      const delta = Math.max(0, Math.min(0.1, renderTime - this._lastNoiseEvolutionRenderTime));
+      this._lastNoiseEvolutionRenderTime = renderTime;
+      this._lastNoiseEvolutionTick = 0;
+      this._noiseEvolutionPhase += delta * speed;
+      return this._noiseEvolutionPhase;
+    }
+
+    const now = performance.now();
+    if (!this._lastNoiseEvolutionTick) {
+      this._lastNoiseEvolutionTick = now;
+      this._lastNoiseEvolutionRenderTime = this.time;
+      return this._noiseEvolutionPhase;
+    }
+
+    const delta = Math.max(0, Math.min(0.1, (now - this._lastNoiseEvolutionTick) / 1000));
+    this._lastNoiseEvolutionTick = now;
+    this._lastNoiseEvolutionRenderTime = this.time;
+    this._noiseEvolutionPhase += delta * speed;
+    return this._noiseEvolutionPhase;
   }
 
   /**
@@ -626,14 +655,21 @@ class GridRenderer {
     if (maskMode === 'tabloop' && this._maskProcessor) {
       const layoutW = (this._layoutCore && this._layoutCore.w) || canvasWidth;
       const layoutH = (this._layoutCore && this._layoutCore.h) || canvasHeight;
+      const maskEvolutionPhase = this._getMaskEvolutionPhase(state);
       maskValues = this._maskProcessor.computeRingMask(
         cols, rows, posX, posY, cubeWidth, cubeHeight,
-        canvasWidth, canvasHeight, state, layoutW, layoutH
+        canvasWidth, canvasHeight, state, layoutW, layoutH, maskEvolutionPhase
       );
     } else if (maskMode === 'custom' && this._maskProcessor &&
                typeof maskSampler !== 'undefined' && maskSampler && maskSampler.hasImage()) {
       const channel = state.maskChannel || 'luminance';
       const maskInvert = state.maskInvert || false;
+      const syncMask = state.maskSyncWithTexture !== false;
+      const maskPosX = syncMask ? (state.texturePositionX ?? 0) : (state.maskPositionX ?? 0);
+      const maskPosY = syncMask ? (state.texturePositionY ?? 0) : (state.maskPositionY ?? 0);
+      const maskScale = syncMask ? (state.textureScale ?? 100) : (state.maskScale ?? 100);
+      maskSampler.setTransform(50 - maskPosX, 50 - maskPosY, maskScale, maskScale, 0);
+      maskSampler.setGridViewport(offsetX, offsetY, totalWidth, totalHeight, canvasWidth, canvasHeight);
       maskValues = this._maskProcessor.computeCustomMask(
         cols, rows, posX, posY, cubeWidth, cubeHeight,
         canvasWidth, canvasHeight, maskSampler, channel, maskInvert,

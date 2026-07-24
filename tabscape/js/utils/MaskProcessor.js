@@ -30,7 +30,7 @@ class MaskProcessor {
    * Compute ring mask (ported from loop-generator-v4).
    * Returns Float32Array of mask values (0-1) per cell.
    */
-  computeRingMask(cols, rows, posX, posY, cubeW, cubeH, canvasW, canvasH, state, layoutW, layoutH) {
+  computeRingMask(cols, rows, posX, posY, cubeW, cubeH, canvasW, canvasH, state, layoutW, layoutH, noiseEvolution = 0) {
     const gridSize = cols * rows;
     this._ensureSize(gridSize);
 
@@ -66,10 +66,10 @@ class MaskProcessor {
         const nx = Math.cos(angle) * noiseScale;
         const ny = Math.sin(angle) * noiseScale;
         if (ringInnerNoise > 0) {
-          this._innerNoiseLUT[i] = (this.p.noise(nx + 50 + seedOff, ny + 50 + seedOff) - 0.5) * 2;
+          this._innerNoiseLUT[i] = (this.p.noise(nx + 50 + seedOff, ny + 50 + seedOff, noiseEvolution) - 0.5) * 2;
         }
         if (ringOuterNoise > 0) {
-          this._outerNoiseLUT[i] = (this.p.noise(nx + 150 + seedOff, ny + 150 + seedOff) - 0.5) * 2;
+          this._outerNoiseLUT[i] = (this.p.noise(nx + 150 + seedOff, ny + 150 + seedOff, noiseEvolution + 17.3) - 0.5) * 2;
         }
       }
     }

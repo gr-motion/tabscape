@@ -137,6 +137,11 @@ html, body {
   font-size: 14px;
   background: var(--canvas-bg);
   color: var(--text-primary);
+  user-select: none;
+}
+
+input, textarea, [contenteditable] {
+  user-select: text;
 }
 
 /* =============================================
@@ -249,6 +254,46 @@ html, body {
 
 .panel__content {
   padding: 0;
+}
+
+@keyframes danger-reveal {
+  0%   { outline: 2px solid rgba(242, 12, 31, 0);    box-shadow: inset 0 0 0px 0 rgba(242, 12, 31, 0);    transform: translateX(0); }
+  8%   { outline: 2px solid rgba(242, 12, 31, 0.9);  box-shadow: inset 0 0 24px 4px rgba(242, 12, 31, 0.25); transform: translateX(-5px); }
+  16%  { outline: 2px solid rgba(242, 12, 31, 0.85); box-shadow: inset 0 0 20px 4px rgba(242, 12, 31, 0.22); transform: translateX(5px); }
+  26%  { outline: 2px solid rgba(242, 12, 31, 0.7);  box-shadow: inset 0 0 18px 3px rgba(242, 12, 31, 0.18); transform: translateX(-4px); }
+  36%  { outline: 2px solid rgba(242, 12, 31, 0.55); box-shadow: inset 0 0 14px 2px rgba(242, 12, 31, 0.13); transform: translateX(3px); }
+  48%  { outline: 2px solid rgba(242, 12, 31, 0.35); box-shadow: inset 0 0 10px 1px rgba(242, 12, 31, 0.08); transform: translateX(-1px); }
+  62%  { outline: 2px solid rgba(242, 12, 31, 0.2);  box-shadow: inset 0 0 6px 0px rgba(242, 12, 31, 0.04);  transform: translateX(0); }
+  100% { outline: 2px solid rgba(242, 12, 31, 0);    box-shadow: inset 0 0 0px 0 rgba(242, 12, 31, 0);    transform: translateX(0); }
+}
+
+.parameter-group--danger-reveal {
+  animation: danger-reveal 1.4s cubic-bezier(0.3, 0, 0, 1) forwards;
+}
+
+.panel__danger-divider {
+  border: none;
+  border-top: 1px solid var(--input-border);
+  margin: calc(8px * var(--s)) 0 0;
+}
+
+.panel__danger-zone-link {
+  display: block;
+  width: 100%;
+  padding: calc(8px * var(--s)) 0;
+  text-align: center;
+  font-size: calc(11px * var(--s));
+  color: var(--text-label);
+  background: none;
+  border: none;
+  cursor: pointer;
+  letter-spacing: 0.06em;
+  transition: color 0.15s;
+}
+
+.panel__danger-zone-link:hover,
+.panel__danger-zone-link--active {
+  color: var(--text-primary);
 }
 
 /* =============================================
@@ -660,6 +705,10 @@ html, body {
   color: var(--text-primary);
 }
 
+.parameter__value--readonly {
+  cursor: default;
+}
+
 /* =============================================
    Slider Parameter
    ============================================= */
@@ -696,6 +745,23 @@ html, body {
   border: none;
   border-radius: calc(3px * var(--s));
   cursor: pointer;
+}
+
+.parameter--outside-base-scope .parameter__label,
+.parameter--outside-base-scope .parameter__value {
+  color: var(--opera-red);
+}
+
+.parameter--outside-base-scope .parameter__slider {
+  background: var(--opera-red);
+}
+
+.parameter--outside-base-scope .parameter__slider::-webkit-slider-thumb {
+  background: var(--opera-red);
+}
+
+.parameter--outside-base-scope .parameter__slider::-moz-range-thumb {
+  background: var(--opera-red);
 }
 
 /* =============================================

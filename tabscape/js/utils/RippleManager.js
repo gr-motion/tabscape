@@ -73,14 +73,29 @@ class RippleManager {
    */
   update(speed, maxRadius = 2000) {
     const now = this._now();
+    const duration = (maxRadius / speed) * 4;
 
     this.ripples = this.ripples.filter(ripple => {
-      const elapsed = (now - ripple.startTime) / 1000; // seconds
-      ripple.radius = elapsed * speed;
-
-      // Keep ripple active if within bounds
-      return ripple.radius < maxRadius;
+      const elapsed = (now - ripple.startTime) / 1000;
+      const progress = elapsed / duration;
+      if (progress >= 1) return false;
+      ripple.radius = this._bezierEase(progress, 0, 0, 0, 1) * maxRadius;
+      return true;
     });
+  }
+
+  _bezierEase(progress, x1, y1, x2, y2) {
+    if (progress <= 0) return 0;
+    if (progress >= 1) return 1;
+    let lo = 0, hi = 1;
+    for (let i = 0; i < 20; i++) {
+      const t = (lo + hi) / 2;
+      const x = 3 * (1 - t) * (1 - t) * t * x1 + 3 * (1 - t) * t * t * x2 + t * t * t;
+      if (Math.abs(x - progress) < 1e-5) { lo = hi = t; break; }
+      if (x < progress) lo = t; else hi = t;
+    }
+    const t = (lo + hi) / 2;
+    return 3 * (1 - t) * (1 - t) * t * y1 + 3 * (1 - t) * t * t * y2 + t * t * t;
   }
 
   /**

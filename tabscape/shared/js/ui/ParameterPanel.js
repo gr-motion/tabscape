@@ -218,12 +218,54 @@ class ParameterPanelBase {
     const content = document.createElement('div');
     content.className = 'panel__content';
 
+    let scopeGroup = null;
+    let lastGroupContent = null;
+
     this.groups.forEach((params, groupName) => {
       const visibleParams = params.filter(p => !p.hidden);
       if (visibleParams.length === 0) return;
+      if (groupName === 'Scope') {
+        scopeGroup = this._createGroup(groupName, params);
+        return;
+      }
       const group = this._createGroup(groupName, params);
       content.appendChild(group);
+      lastGroupContent = group.querySelector('.parameter-group__content');
     });
+
+    if (lastGroupContent) {
+      const divider = document.createElement('hr');
+      divider.className = 'panel__danger-divider';
+      lastGroupContent.appendChild(divider);
+
+      const dangerLink = document.createElement('button');
+      dangerLink.type = 'button';
+      dangerLink.className = 'panel__danger-zone-link';
+      dangerLink.textContent = 'enter danger zone';
+      lastGroupContent.appendChild(dangerLink);
+
+      if (scopeGroup) {
+        scopeGroup.hidden = true;
+        dangerLink.addEventListener('click', () => {
+          const isHidden = scopeGroup.hidden;
+          scopeGroup.hidden = !isHidden;
+          dangerLink.classList.toggle('panel__danger-zone-link--active', isHidden);
+
+          if (isHidden) {
+            requestAnimationFrame(() => {
+              scopeGroup.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              scopeGroup.classList.remove('parameter-group--danger-reveal');
+              void scopeGroup.offsetWidth;
+              scopeGroup.classList.add('parameter-group--danger-reveal');
+              scopeGroup.addEventListener('animationend', () => {
+                scopeGroup.classList.remove('parameter-group--danger-reveal');
+              }, { once: true });
+            });
+          }
+        });
+        content.appendChild(scopeGroup);
+      }
+    }
 
     this.container.appendChild(content);
     this._onRenderContent(content);
@@ -267,6 +309,16 @@ class ParameterPanelBase {
     loadBtn.textContent = 'Load Settings';
     loadBtn.addEventListener('click', () => this._triggerLoadSettings());
 
+    const motionBtn = document.createElement('button');
+    motionBtn.className = 'settings-bar__btn settings-bar__btn--motion';
+    motionBtn.type = 'button';
+    motionBtn.textContent = 'Motion';
+    motionBtn.addEventListener('click', () => {
+      if (window.animationController) {
+        window.animationController.toggleMotion();
+      }
+    });
+
     const loadInput = document.createElement('input');
     loadInput.type = 'file';
     loadInput.accept = '.json';
@@ -281,6 +333,7 @@ class ParameterPanelBase {
 
     bar.appendChild(saveBtn);
     bar.appendChild(loadBtn);
+    bar.appendChild(motionBtn);
     bar.appendChild(loadInput);
 
     // Card body (collapsible)
@@ -414,6 +467,10 @@ class ParameterPanelBase {
       settings.colorRemapMode = settings.colorRemapEnabled ? 'full' : 'none';
       delete settings.colorRemapEnabled;
     }
+    if ('texturePlaybackExtendScope' in settings && !('extendScope' in settings)) {
+      settings.extendScope = !!settings.texturePlaybackExtendScope;
+      delete settings.texturePlaybackExtendScope;
+    }
 
     const paletteKeys = this._getPaletteKeys();
 
@@ -446,8 +503,9 @@ class ParameterPanelBase {
           const container = element.closest('.parameter');
           const display = container ? container.querySelector('.parameter__value') : null;
           if (display) {
-            if (display.tagName === 'INPUT') display.value = value;
-            else display.textContent = value;
+            const displayValue = param && param.formatValue ? param.formatValue(value) : value;
+            if (display.tagName === 'INPUT') display.value = displayValue;
+            else display.textContent = displayValue;
           }
         }
       }

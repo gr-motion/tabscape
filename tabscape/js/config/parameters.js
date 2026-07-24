@@ -4,6 +4,16 @@
  * Easy to add new parameters - just add to this array
  */
 const PARAMETER_CONFIG = [
+  // ── Scope ──
+  {
+    id: 'extendScope',
+    label: 'Extend Scope',
+    description: 'Extends all slider ranges by x3. Use with care.',
+    group: 'Scope',
+    type: 'toggle',
+    defaultValue: false
+  },
+
   // ── Tabs ──
   {
     id: 'gridDensity',
@@ -76,6 +86,50 @@ const PARAMETER_CONFIG = [
     dropZone: true,
     dropZoneText: 'Drop mask image here',
     defaultValue: null
+  },
+  {
+    id: 'maskSyncWithTexture',
+    label: 'Sync with Texture',
+    description: 'Keep custom mask position and scale linked to the texture transform',
+    group: 'Mask',
+    type: 'toggle',
+    defaultValue: true
+  },
+  {
+    id: 'maskPositionX',
+    label: 'Position X',
+    description: 'Horizontal offset of the custom mask',
+    group: 'Mask',
+    type: 'slider',
+    min: -100,
+    max: 100,
+    step: 1,
+    defaultValue: 0,
+    defaultLocked: true
+  },
+  {
+    id: 'maskPositionY',
+    label: 'Position Y',
+    description: 'Vertical offset of the custom mask',
+    group: 'Mask',
+    type: 'slider',
+    min: -100,
+    max: 100,
+    step: 1,
+    defaultValue: 0,
+    defaultLocked: true
+  },
+  {
+    id: 'maskScale',
+    label: 'Scale',
+    description: 'Zoom level of the custom mask (aspect ratio locked)',
+    group: 'Mask',
+    type: 'slider',
+    min: 10,
+    max: 400,
+    step: 1,
+    defaultValue: 100,
+    defaultLocked: true
   },
   {
     id: 'maskChannel',
@@ -157,13 +211,27 @@ const PARAMETER_CONFIG = [
     label: 'Noise',
     description: 'Turbulence applied to ring edges',
     group: 'Mask',
-    type: 'button-group',
-    options: [
-      { value: 0, label: 'Off' },
-      { value: 33, label: 'Low' },
-      { value: 66, label: 'Med' },
-      { value: 99, label: 'High' }
-    ],
+    type: 'slider',
+    min: 0,
+    max: 99,
+    step: 0.1,
+    valueLabels: {
+      0: 'Off',
+      33: 'Low',
+      66: 'Med',
+      99: 'High'
+    },
+    defaultValue: 0
+  },
+  {
+    id: 'maskNoiseEvolutionSpeed',
+    label: 'Noise Evolution Speed',
+    description: 'Speed of continuous ring noise evolution',
+    group: 'Mask',
+    type: 'slider',
+    min: 0,
+    max: 1,
+    step: 0.01,
     defaultValue: 0
   },
   {
@@ -223,6 +291,18 @@ const PARAMETER_CONFIG = [
       { value: 'custom', label: 'Custom' }
     ],
     defaultValue: 'default'
+  },
+  {
+    id: 'texturePlaybackSpeed',
+    label: 'Texture Playback Speed',
+    description: 'Playback speed for the texture video',
+    group: 'Texture',
+    type: 'slider',
+    min: 0.45,
+    max: 1,
+    step: 0.01,
+    valuePrefix: 'x',
+    defaultValue: 1
   },
   {
     id: 'imageSource',

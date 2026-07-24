@@ -22,6 +22,9 @@ class Parameter {
     if (this.disabled) return;
     this.value = value;
     stateManager.set(this.id, value);
+    if (window.animationController) {
+      window.animationController.recordChange(this.id, value);
+    }
     if (this.onChange) this.onChange(value);
   }
 
@@ -94,7 +97,40 @@ class Parameter {
       label.appendChild(lock);
     }
 
+    if (this._isMotionAnimatable()) {
+      label.appendChild(this._createMotionToggle(this.id, this.label));
+      if (window.animationController) {
+        window.animationController.registerKey(this.id, {
+          label: this.label,
+          type: this.type,
+          parameter: this
+        });
+      }
+    }
+
     return label;
+  }
+
+  _isMotionAnimatable() {
+    return new Set(['slider', 'color', 'toggle', 'select', 'number', 'button-group']).has(this.type);
+  }
+
+  _createMotionToggle(key, labelText) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'parameter__motion-toggle';
+    btn.title = 'Keyframe ' + labelText;
+    btn.setAttribute('aria-label', 'Keyframe ' + labelText);
+    btn.dataset.motionKey = key;
+    btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (window.animationController) {
+        window.animationController.toggleKeyframing(key);
+      }
+    });
+    return btn;
   }
 
   /**
@@ -114,10 +150,47 @@ class SliderParameter extends Parameter {
     super({ ...config, type: 'slider' });
     this.min = config.min ?? 0;
     this.max = config.max ?? 100;
+    this.baseMin = this.min;
+    this.baseMax = this.max;
     this.step = config.step ?? 1;
+    this.valueLabels = config.valueLabels || null;
+    this.valuePrefix = config.valuePrefix || '';
+    this.valueSuffix = config.valueSuffix || '';
     // Optional: id of another state key whose value acts as the lower bound for
     // this slider. Visually clamps the slider; does NOT mutate stored value.
     this.dynamicMinFrom = config.dynamicMinFrom || null;
+  }
+
+  formatValue(value) {
+    const formatNumber = (input) => {
+      const numeric = parseFloat(input);
+      if (!Number.isFinite(numeric)) return input;
+      return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(1);
+    };
+
+    if (!this.valueLabels) {
+      const displayValue = formatNumber(value);
+      return (this.valuePrefix || this.valueSuffix)
+        ? `${this.valuePrefix}${displayValue}${this.valueSuffix}`
+        : displayValue;
+    }
+    const numeric = parseFloat(value);
+    const key = String(Number.isNaN(numeric) ? value : Math.round(numeric));
+    if (this.valueLabels[key] != null) return this.valueLabels[key];
+
+    if (!Number.isNaN(numeric)) {
+      let closestKey = null;
+      let closestDist = Infinity;
+      Object.keys(this.valueLabels).forEach(labelKey => {
+        const dist = Math.abs(parseFloat(labelKey) - numeric);
+        if (dist < closestDist) {
+          closestDist = dist;
+          closestKey = labelKey;
+        }
+      });
+      if (closestKey != null) return this.valueLabels[closestKey];
+    }
+    return value;
   }
 
   createControl() {
@@ -132,7 +205,11 @@ class SliderParameter extends Parameter {
     const valueInput = document.createElement('input');
     valueInput.type = 'text';
     valueInput.className = 'parameter__value parameter__value--editable';
-    valueInput.value = this.value;
+    valueInput.value = this.formatValue(this.value);
+    if (this.valueLabels || this.valuePrefix || this.valueSuffix) {
+      valueInput.readOnly = true;
+      valueInput.classList.add('parameter__value--readonly');
+    }
 
     header.appendChild(label);
     header.appendChild(valueInput);
@@ -146,16 +223,48 @@ class SliderParameter extends Parameter {
     slider.step = this.step;
     slider.value = this.value;
 
+    let currentFloor = this.min;
+    const getSliderNumber = (value, fallback) => {
+      const numeric = parseFloat(value);
+      return Number.isFinite(numeric) ? numeric : fallback;
+    };
+    const setSliderValue = (value) => {
+      const val = getSliderNumber(value, this.value);
+      valueInput.value = this.formatValue(val);
+      slider.value = val;
+      this.setValue(val);
+    };
+    const resetToDefault = () => {
+      if (this.disabled) return;
+      const fallback = getSliderNumber(this.value, this.min);
+      const defaultValue = getSliderNumber(this.defaultValue, fallback);
+      const min = getSliderNumber(this.min, defaultValue);
+      const max = getSliderNumber(this.max, defaultValue);
+      const floor = Math.max(min, getSliderNumber(currentFloor, min));
+      const val = Math.max(floor, Math.min(max, defaultValue));
+      setSliderValue(val);
+    };
+
     slider.addEventListener('input', (e) => {
       const val = parseFloat(e.target.value);
-      valueInput.value = val;
+      valueInput.value = this.formatValue(val);
       this.setValue(val);
     });
 
+    slider.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      resetToDefault();
+    });
+
     valueInput.addEventListener('keydown', (e) => {
+      if (this.valueLabels || this.valuePrefix || this.valueSuffix) return;
       if (e.key === 'Enter') { valueInput.blur(); }
     });
     valueInput.addEventListener('blur', () => {
+      if (this.valueLabels || this.valuePrefix || this.valueSuffix) {
+        valueInput.value = this.formatValue(this.value);
+        return;
+      }
       let val = parseFloat(valueInput.value);
       if (isNaN(val)) val = this.value;
       val = Math.max(this.min, Math.min(this.max, val));
@@ -189,7 +298,6 @@ class SliderParameter extends Parameter {
       wrap.appendChild(slider);
       container.appendChild(wrap);
 
-      let currentFloor = this.min;
       const applyDynMin = (other) => {
         const lo = Math.max(this.min, parseFloat(other) || this.min);
         currentFloor = lo;
