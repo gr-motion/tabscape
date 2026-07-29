@@ -59,6 +59,7 @@ class AnimationController {
   setMotionEnabled(enabled) {
     this.motionEnabled = !!enabled;
     document.body.classList.toggle('motion-open', this.motionEnabled);
+    document.dispatchEvent(new CustomEvent('motiontoggle', { detail: { enabled: this.motionEnabled } }));
     if (this._timelineEl) this._timelineEl.hidden = !this.motionEnabled;
     if (!this.motionEnabled) this.pause();
     this._updateMotionButton();

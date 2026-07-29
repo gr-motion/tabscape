@@ -19,6 +19,15 @@ body.motion-open #canvas-container {
   color: var(--card-bg);
 }
 
+body:not(.motion-open) .parameter__motion-toggle {
+  display: none;
+}
+
+body:not(.motion-open) .panel__danger-divider,
+body:not(.motion-open) .panel__danger-zone-link {
+  display: none;
+}
+
 .parameter__motion-toggle {
   width: calc(18px * var(--s));
   height: calc(18px * var(--s));

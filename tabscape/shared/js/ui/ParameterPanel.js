@@ -253,7 +253,8 @@ class ParameterPanelBase {
 
           if (isHidden) {
             requestAnimationFrame(() => {
-              scopeGroup.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              const panel = scopeGroup.closest('#parameter-panel');
+              if (panel) panel.scrollTo({ top: panel.scrollHeight, behavior: 'smooth' });
               scopeGroup.classList.remove('parameter-group--danger-reveal');
               void scopeGroup.offsetWidth;
               scopeGroup.classList.add('parameter-group--danger-reveal');
@@ -264,6 +265,13 @@ class ParameterPanelBase {
           }
         });
         content.appendChild(scopeGroup);
+
+        document.addEventListener('motiontoggle', (e) => {
+          if (!e.detail.enabled) {
+            scopeGroup.hidden = true;
+            dangerLink.classList.remove('panel__danger-zone-link--active');
+          }
+        });
       }
     }
 
