@@ -833,6 +833,13 @@ body.motion-value-dragging {
   object-fit: contain;
 }
 
+/* Dark canvas background → inverted theme: tiles go dark, so flip the
+   black SVG shapes to white (alpha is preserved by invert). */
+.inverted .mask-library__thumb img,
+.inverted .parameter__image-preview--library img {
+  filter: invert(1);
+}
+
 .mask-library__name {
   font-family: 'Söhne Mono', monospace;
   font-size: 11px;
