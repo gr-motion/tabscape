@@ -45,6 +45,12 @@ class AnimationController {
     this._updateMotionButton();
   }
 
+  _schedulePersistence() {
+    if (this.app && this.app._scheduleLocalStateSave) {
+      this.app._scheduleLocalStateSave();
+    }
+  }
+
   registerKey(key, meta = {}) {
     if (!key || this.registry.has(key)) return;
     this.registry.set(key, meta);
@@ -69,6 +75,7 @@ class AnimationController {
     setTimeout(() => {
       if (this.app && this.app.fitCanvasToTexture) this.app.fitCanvasToTexture();
     }, 30);
+    this._schedulePersistence();
   }
 
   toggleKeyframing(key) {
@@ -132,6 +139,7 @@ class AnimationController {
     this.currentTime = Math.max(0, Math.min(this.duration, time || 0));
     this.applyCurrentTime();
     this._updateTimeUI();
+    if (!this.isPlaying) this._schedulePersistence();
   }
 
   applyCurrentTime() {
@@ -170,6 +178,7 @@ class AnimationController {
       motionEnabled: this.motionEnabled,
       duration: this.duration,
       currentTime: this.currentTime,
+      timelineHeight: this._timelineHeight,
       keyframingEnabled: { ...this.keyframingEnabled },
       keyframes,
       tracks
@@ -182,6 +191,10 @@ class AnimationController {
     const motion = this._normalizeMotionData(data);
     if (typeof motion.duration === 'number') this.duration = Math.max(0.5, motion.duration);
     if (typeof motion.currentTime === 'number') this.currentTime = Math.max(0, Math.min(this.duration, motion.currentTime));
+    if (typeof motion.timelineHeight === 'number') {
+      this._timelineHeight = Math.max(180, Math.min(window.innerHeight * 0.75, motion.timelineHeight));
+      this._applyTimelineHeight();
+    }
     this.keyframingEnabled = { ...(motion.keyframingEnabled || {}) };
     this.keyframes = JSON.parse(JSON.stringify(motion.keyframes || {}));
     this.registry.forEach((_, key) => {
@@ -197,6 +210,7 @@ class AnimationController {
     this._renderTimeline();
     this._updateTimeUI();
     this._clearTimelineHistory();
+    this._schedulePersistence();
   }
 
   undo() {
@@ -240,6 +254,7 @@ class AnimationController {
           this._coalesceTimer = null;
         }, 400)
       : null;
+    this._schedulePersistence();
   }
 
   _clearTimelineHistory() {
@@ -753,6 +768,7 @@ class AnimationController {
     }
     this._updateTimeUI();
     this._updateEasingBar();
+    if (!this.isPlaying) this._schedulePersistence();
   }
 
   _applyValue(key, value) {
@@ -1253,6 +1269,7 @@ class AnimationController {
       motionEnabled: data.motionEnabled,
       duration: data.duration,
       currentTime: data.currentTime,
+      timelineHeight: data.timelineHeight,
       keyframingEnabled: { ...(data.keyframingEnabled || {}) },
       keyframes: JSON.parse(JSON.stringify(data.keyframes || {}))
     };

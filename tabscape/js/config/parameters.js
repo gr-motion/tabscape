@@ -144,6 +144,18 @@ const PARAMETER_CONFIG = [
     defaultLocked: true
   },
   {
+    id: 'maskRotation',
+    label: 'Rotate',
+    description: 'Rotation of the custom mask in degrees',
+    group: 'Mask',
+    type: 'slider',
+    min: -180,
+    max: 180,
+    step: 1,
+    defaultValue: 0,
+    hidden: true
+  },
+  {
     id: 'maskChannel',
     label: 'Mask Channel',
     description: 'Which channel to read from the mask image',
@@ -439,6 +451,17 @@ const PARAMETER_CONFIG = [
     step: 1,
     defaultValue: 100,
     defaultLocked: true
+  },
+  {
+    id: 'textureRotation',
+    label: 'Rotate',
+    description: 'Rotation of the texture in degrees',
+    group: 'Texture',
+    type: 'slider',
+    min: -180,
+    max: 180,
+    step: 1,
+    defaultValue: 0
   },
   {
     id: 'imageSaturationToScale',

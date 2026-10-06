@@ -435,9 +435,11 @@ class ImageSampler {
       const rad = this._rotation * Math.PI / 180;
       const cos = Math.cos(rad);
       const sin = Math.sin(rad);
-      const cx = u - 0.5;
+      // Rotate in aspect-corrected space so non-square canvases don't shear
+      const aspect = this._canvasAspect || 1;
+      const cx = (u - 0.5) * aspect;
       const cy = v - 0.5;
-      u = cx * cos + cy * sin + 0.5;
+      u = (cx * cos + cy * sin) / aspect + 0.5;
       v = -cx * sin + cy * cos + 0.5;
     }
 

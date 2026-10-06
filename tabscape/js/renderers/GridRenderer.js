@@ -624,7 +624,7 @@ class GridRenderer {
       const texPosX = 50 - (state.texturePositionX ?? 0);
       const texPosY = 50 - (state.texturePositionY ?? 0);
       const texScale = state.textureScale ?? 100;
-      imageSampler.setTransform(texPosX, texPosY, texScale, texScale, 0);
+      imageSampler.setTransform(texPosX, texPosY, texScale, texScale, state.textureRotation ?? 0);
       imageSampler.setGridViewport(offsetX, offsetY, totalWidth, totalHeight, canvasWidth, canvasHeight);
       imageSampler.cacheGridColors(cols, rows, canvasWidth, canvasHeight);
     }
@@ -668,12 +668,13 @@ class GridRenderer {
       const maskPosX = syncMask ? (state.texturePositionX ?? 0) : (state.maskPositionX ?? 0);
       const maskPosY = syncMask ? (state.texturePositionY ?? 0) : (state.maskPositionY ?? 0);
       const maskScale = syncMask ? (state.textureScale ?? 100) : (state.maskScale ?? 100);
-      maskSampler.setTransform(50 - maskPosX, 50 - maskPosY, maskScale, maskScale, 0);
+      const maskRotation = syncMask ? (state.textureRotation ?? 0) : (state.maskRotation ?? 0);
+      maskSampler.setTransform(50 - maskPosX, 50 - maskPosY, maskScale, maskScale, maskRotation);
       maskSampler.setGridViewport(offsetX + cubeWidth / 2, offsetY + cubeHeight / 2, Math.max(1, totalWidth - cubeWidth), Math.max(1, totalHeight - cubeHeight), canvasWidth, canvasHeight);
       maskValues = this._maskProcessor.computeCustomMask(
         cols, rows, posX, posY, cubeWidth, cubeHeight,
         canvasWidth, canvasHeight, maskSampler, channel, maskInvert,
-        (state.maskSoftness ?? 0) / 100
+        (state.maskSoftness ?? 0) / 100, state, this._getMaskEvolutionPhase(state)
       );
     }
 

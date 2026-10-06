@@ -16,6 +16,11 @@ class App {
     this.realtimeRecorder = new RealtimeRecorder();
     this.animationController = null;
     this._isSyncingMaskTextureTransform = false;
+    this.workspacePersistence = typeof WorkspacePersistence !== 'undefined'
+      ? new WorkspacePersistence()
+      : null;
+    this._workspaceSaveTimer = null;
+    this._isRestoringWorkspace = false;
   }
 
   /**
@@ -126,6 +131,9 @@ class App {
       this._syncLoopDuration();
     });
     stateManager.subscribeAll((key, value) => {
+      if (!this._isRestoringWorkspace && (key === '__undoRedo' || key !== '_motion')) {
+        this._scheduleLocalStateSave();
+      }
       if (key === 'extendScope' || key === '__undoRedo') return;
       const param = this.parameterPanel && this.parameterPanel.getParameter
         ? this.parameterPanel.getParameter(key)
@@ -136,6 +144,8 @@ class App {
     });
     this._updateTextureVisibility(stateManager.get('textureMode') || 'default');
     this._updateSliderScopes();
+    this._setupWorkspacePersistence();
+    await this._restoreLocalWorkspace();
 
     // Auto-load default texture on startup
     this._defaultTextureLoaded = false;
@@ -151,6 +161,122 @@ class App {
 
     this.isInitialized = true;
     console.log('Tabscape initialized');
+  }
+
+  _setupWorkspacePersistence() {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') this._flushLocalStateSave();
+    });
+    window.addEventListener('beforeunload', () => this._flushLocalStateSave());
+  }
+
+  _scheduleLocalStateSave() {
+    if (!this.workspacePersistence || this._isRestoringWorkspace || !this.parameterPanel) return;
+    clearTimeout(this._workspaceSaveTimer);
+    this._workspaceSaveTimer = setTimeout(() => this._flushLocalStateSave(), 250);
+  }
+
+  _flushLocalStateSave() {
+    if (!this.workspacePersistence || this._isRestoringWorkspace || !this.parameterPanel) return;
+    clearTimeout(this._workspaceSaveTimer);
+    this._workspaceSaveTimer = null;
+    this.workspacePersistence.saveSnapshot({
+      settings: this._buildLocalWorkspaceSettings()
+    });
+  }
+
+  _buildLocalWorkspaceSettings() {
+    const state = stateManager.getAll();
+    const settings = {};
+    for (const [key, value] of Object.entries(state)) {
+      const param = this.parameterPanel.parameters.get(key);
+      if (param && param.type === 'image') continue;
+      if (value instanceof File || value instanceof Blob) continue;
+      settings[key] = value;
+    }
+
+    const locks = {};
+    this.parameterPanel.parameters.forEach((param, key) => {
+      if (param.locked) locks[key] = true;
+    });
+    if (Object.keys(locks).length > 0) settings._locks = locks;
+
+    Object.assign(settings, this.parameterPanel._getExtraSettingsData());
+    settings._persistedMediaState = this._collectPersistedMediaState();
+    return settings;
+  }
+
+  _collectPersistedMediaState() {
+    const mediaState = {};
+    if (!this.parameterPanel || !this.parameterPanel.parameters) return mediaState;
+    this.parameterPanel.parameters.forEach((param, key) => {
+      if (!param || param.type !== 'image' || typeof param._getSampler !== 'function') return;
+      const sampler = param._getSampler();
+      if (sampler && sampler.hasVideo && sampler.hasVideo()) {
+        mediaState[key] = {
+          progress: sampler.getVideoProgress ? sampler.getVideoProgress() : 0,
+          paused: !sampler.isPlaying
+        };
+      }
+    });
+    return mediaState;
+  }
+
+  async _persistParameterMedia(id, file) {
+    if (!this.workspacePersistence) return;
+    await this.workspacePersistence.saveMedia(id, file);
+    this._scheduleLocalStateSave();
+  }
+
+  async _clearPersistedParameterMedia(id) {
+    if (!this.workspacePersistence) return;
+    await this.workspacePersistence.removeMedia(id);
+    this._scheduleLocalStateSave();
+  }
+
+  async _restoreLocalWorkspace() {
+    if (!this.workspacePersistence || !this.parameterPanel) return false;
+    const snapshot = this.workspacePersistence.loadSnapshot();
+    if (!snapshot || !snapshot.settings) return false;
+
+    this._isRestoringWorkspace = true;
+    try {
+      this.parameterPanel._applySettings(snapshot.settings);
+      await this._restorePersistedMedia(snapshot.settings._persistedMediaState || {});
+      stateManager.clearHistory();
+      if (this.animationController && this.animationController._clearTimelineHistory) {
+        this.animationController._clearTimelineHistory();
+      }
+      return true;
+    } catch (err) {
+      console.warn('Failed to restore local workspace:', err);
+      return false;
+    } finally {
+      this._isRestoringWorkspace = false;
+    }
+  }
+
+  async _restorePersistedMedia(mediaState) {
+    if (!this.workspacePersistence || !this.parameterPanel) return;
+    const entries = await this.workspacePersistence.loadAllMedia();
+    for (const entry of entries) {
+      if (!entry || !entry.id || !this._shouldRestorePersistedMedia(entry.id)) continue;
+      const param = this.parameterPanel.getParameter(entry.id);
+      if (!param || typeof param.restorePersistedMedia !== 'function') continue;
+      await param.restorePersistedMedia(entry, mediaState[entry.id] || null);
+    }
+  }
+
+  _shouldRestorePersistedMedia(id) {
+    if (id === 'imageSource') {
+      return (stateManager.get('textureMode') || 'default') === 'custom';
+    }
+    if (id === 'maskCustomImage') {
+      // Always restore the file; Parameter._handleFile only loads it into the
+      // shared mask sampler while Custom mode is active.
+      return true;
+    }
+    return true;
   }
 
   _getMaskNoiseScale(value) {
@@ -178,13 +304,13 @@ class App {
       if (enabled) this._syncMaskTransformFromTexture();
     });
 
-    ['texturePositionX', 'texturePositionY', 'textureScale'].forEach(key => {
+    ['texturePositionX', 'texturePositionY', 'textureScale', 'textureRotation'].forEach(key => {
       stateManager.subscribe(key, () => {
         if (stateManager.get('maskSyncWithTexture')) this._syncMaskTransformFromTexture();
       });
     });
 
-    ['maskPositionX', 'maskPositionY', 'maskScale'].forEach(key => {
+    ['maskPositionX', 'maskPositionY', 'maskScale', 'maskRotation'].forEach(key => {
       stateManager.subscribe(key, () => {
         if (stateManager.get('maskSyncWithTexture')) this._syncTextureTransformFromMask();
       });
@@ -220,6 +346,7 @@ class App {
     this._setLinkedParameterValue('maskPositionX', stateManager.get('texturePositionX') ?? 0);
     this._setLinkedParameterValue('maskPositionY', stateManager.get('texturePositionY') ?? 0);
     this._setLinkedParameterValue('maskScale', stateManager.get('textureScale') ?? 100);
+    this._setLinkedParameterValue('maskRotation', stateManager.get('textureRotation') ?? 0);
     this._isSyncingMaskTextureTransform = false;
   }
 
@@ -229,6 +356,7 @@ class App {
     this._setLinkedParameterValue('texturePositionX', stateManager.get('maskPositionX') ?? 0);
     this._setLinkedParameterValue('texturePositionY', stateManager.get('maskPositionY') ?? 0);
     this._setLinkedParameterValue('textureScale', stateManager.get('maskScale') ?? 100);
+    this._setLinkedParameterValue('textureRotation', stateManager.get('maskRotation') ?? 0);
     this._isSyncingMaskTextureTransform = false;
   }
 
@@ -1204,14 +1332,17 @@ class App {
     const isLibrary = mode === 'library';
     const usesMaskImage = isCustom || isLibrary;
 
+    // Shared mask params
+    // (custom + library masks are warped by the same noise)
+    setVisible('maskNoise', isTabLoop || usesMaskImage);
+    setVisible('maskNoiseEvolutionSpeed', isTabLoop || usesMaskImage);
+    setVisible('maskNoiseSeed', isTabLoop || usesMaskImage);
+
     // Tab loop params
     setVisible('maskRingRadius', isTabLoop);
     setVisible('maskRingThickness', isTabLoop);
     setVisible('maskInnerSoftness', isTabLoop);
     setVisible('maskOuterSoftness', isTabLoop);
-    setVisible('maskNoise', isTabLoop);
-    setVisible('maskNoiseEvolutionSpeed', isTabLoop);
-    setVisible('maskNoiseSeed', isTabLoop);
 
     // Custom + library params (both read the shared mask sampler)
     setVisible('maskCustomImage', isCustom);
@@ -1220,6 +1351,7 @@ class App {
     setVisible('maskPositionX', usesMaskImage);
     setVisible('maskPositionY', usesMaskImage);
     setVisible('maskScale', usesMaskImage);
+    setVisible('maskRotation', usesMaskImage);
     setVisible('maskChannel', usesMaskImage);
     setVisible('maskInvert', usesMaskImage);
     setVisible('maskSoftness', usesMaskImage);
