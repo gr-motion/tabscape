@@ -71,7 +71,8 @@ const PARAMETER_CONFIG = [
     type: 'select',
     options: [
       { value: 'tabloop', label: 'Tab Loop' },
-      { value: 'custom', label: 'Custom' }
+      { value: 'custom', label: 'Custom' },
+      { value: 'library', label: 'Library' }
     ],
     defaultValue: 'tabloop'
   },
@@ -85,6 +86,17 @@ const PARAMETER_CONFIG = [
     enableStateKey: 'maskImageLoaded',
     dropZone: true,
     dropZoneText: 'Drop mask image here',
+    defaultValue: null
+  },
+  {
+    id: 'maskLibraryItem',
+    label: 'Mask Image',
+    description: 'Pick a shape from the mask library (SVG files in the mask_library folder)',
+    group: 'Mask',
+    type: 'mask-library',
+    libraryPath: 'mask_library',
+    buttonText: 'Choose from the library',
+    enableStateKey: 'maskImageLoaded',
     defaultValue: null
   },
   {

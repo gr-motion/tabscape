@@ -714,7 +714,7 @@ class WebGLGridRenderer extends GridRenderer {
     if (maskMode === 'tabloop' && this._maskProcessor) {
       const maskEvolutionPhase = this._getMaskEvolutionPhase(state);
       maskValues = this._maskProcessor.computeRingMask(cols, rows, this._posX, this._posY, cubeWidth, cubeHeight, canvasWidth, canvasHeight, state, layoutW, layoutH, maskEvolutionPhase);
-    } else if (maskMode === 'custom') {
+    } else if (maskMode === 'custom' || maskMode === 'library') {
       const hasMaskProc = !!this._maskProcessor;
       const hasMaskSampler = typeof maskSampler !== 'undefined' && !!maskSampler;
       const maskHasImage = hasMaskSampler && maskSampler.hasImage();
@@ -735,7 +735,7 @@ class WebGLGridRenderer extends GridRenderer {
         const maskPosY = syncMask ? (state.texturePositionY ?? 0) : (state.maskPositionY ?? 0);
         const maskScale = syncMask ? (state.textureScale ?? 100) : (state.maskScale ?? 100);
         maskSampler.setTransform(50 - maskPosX, 50 - maskPosY, maskScale, maskScale, 0);
-        maskSampler.setGridViewport(samplerOffsetX, samplerOffsetY, totalWidth, totalHeight, layoutW, layoutH);
+        maskSampler.setGridViewport(samplerOffsetX + cubeWidth / 2, samplerOffsetY + cubeHeight / 2, Math.max(1, totalWidth - cubeWidth), Math.max(1, totalHeight - cubeHeight), layoutW, layoutH);
         maskValues = this._maskProcessor.computeCustomMask(cols, rows, this._posX, this._posY, cubeWidth, cubeHeight, layoutW, layoutH, maskSampler, state.maskChannel || 'luminance', state.maskInvert || false, (state.maskSoftness ?? 0) / 100);
         if (!this._maskValLogDone) {
           const vals = maskValues;

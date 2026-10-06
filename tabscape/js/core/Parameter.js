@@ -25,6 +25,40 @@ class ImageUploadParameter extends Parameter {
     return typeof imageSampler !== 'undefined' ? imageSampler : null;
   }
 
+  /**
+   * Extract an image from a paste event: a clipboard image file (screenshots,
+   * copied images) or SVG markup copied as text. Returns a File or null.
+   */
+  static getPastedImage(e) {
+    const cd = e.clipboardData;
+    if (!cd) return null;
+    for (const item of cd.items || []) {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const f = item.getAsFile();
+        if (f) return f;
+      }
+    }
+    const text = cd.getData && cd.getData('text/plain');
+    if (text && /^\s*(<\?xml[^>]*>\s*)?<svg[\s>]/i.test(text)) {
+      return new File([text], 'pasted.svg', { type: 'image/svg+xml' });
+    }
+    return null;
+  }
+
+  /**
+   * Re-apply this parameter's media to its sampler (used when several
+   * parameters share one sampler, e.g. the mask's Custom / Library modes).
+   */
+  activate() {
+    const sampler = this._getSampler();
+    if (!sampler) return;
+    if (this.value instanceof File) {
+      sampler.loadMedia(this.value);
+    } else {
+      sampler.clearMedia();
+    }
+  }
+
   createControl() {
     const container = document.createElement('div');
     container.className = 'parameter parameter--image';
@@ -238,12 +272,24 @@ class ImageUploadParameter extends Parameter {
     container.appendChild(preview);
     container.appendChild(videoControls);
 
-    // Drop zone support for mask images
+    // Drop zone support: drag & drop, or click to focus then paste (Cmd/Ctrl+V).
+    // Clicking only activates the zone; the Browse button opens the file dialog.
     if (this.config && this.config.dropZone) {
       const dropZone = document.createElement('div');
       dropZone.className = 'parameter__mask-dropzone';
-      dropZone.textContent = this.config.dropZoneText || 'Drop image here';
+      dropZone.tabIndex = 0;
+      const idleText = this.config.dropZoneText || 'Drop image here';
+      const pasteKey = /Mac|iPhone|iPad/.test(navigator.platform || '') ? '\u2318V' : 'Ctrl+V';
+      dropZone.textContent = idleText;
       this._dropZone = dropZone;
+
+      dropZone.addEventListener('focus', () => {
+        dropZone.textContent = 'Press ' + pasteKey + ' to paste';
+      });
+      dropZone.addEventListener('blur', () => {
+        dropZone.textContent = idleText;
+      });
+      dropZone.addEventListener('click', () => dropZone.focus());
 
       dropZone.addEventListener('dragover', (e) => {
         e.preventDefault();
@@ -261,10 +307,18 @@ class ImageUploadParameter extends Parameter {
         const file = e.dataTransfer.files[0];
         if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) {
           this._handleFile(file, previewImg, previewVideo, preview, uploadArea, videoControls, playBtn);
-          dropZone.style.display = 'none';
         }
       });
-      dropZone.addEventListener('click', () => fileInput.click());
+
+      // Paste works while the drop zone (or the loaded preview, to replace it)
+      // has focus; the event bubbles up from whichever one is focused.
+      preview.tabIndex = 0;
+      container.addEventListener('paste', (e) => {
+        const file = ImageUploadParameter.getPastedImage(e);
+        if (!file) return;
+        e.preventDefault();
+        this._handleFile(file, previewImg, previewVideo, preview, uploadArea, videoControls, playBtn);
+      });
 
       // Show/hide drop zone based on preview state
       clearBtn.addEventListener('click', () => {
@@ -297,6 +351,11 @@ class ImageUploadParameter extends Parameter {
 
     preview.style.display = 'block';
     if (this._browseBtn) this._browseBtn.style.display = 'none';
+    if (this._dropZone) {
+      const wasActive = document.activeElement === this._dropZone;
+      this._dropZone.style.display = 'none';
+      if (wasActive) preview.focus();
+    }
 
     this.setValue(file);
 
@@ -484,7 +543,286 @@ class ButtonGroupParameter extends Parameter {
   }
 }
 
+/**
+ * MaskLibraryParameter - Pick a mask from the SVG shapes in the mask_library
+ * folder. The folder is read at runtime (manifest.json, or the server's
+ * directory listing as a fallback) so new shapes can be dropped in without
+ * touching the code.
+ */
+class MaskLibraryParameter extends Parameter {
+  constructor(config) {
+    super({ ...config, type: 'mask-library' });
+    this.config = config;
+    this.libraryPath = (config.libraryPath || 'mask_library').replace(/\/+$/, '');
+    this.enableStateKey = config.enableStateKey || 'maskImageLoaded';
+    this._file = null;
+    this._item = null;
+    this._modal = null;
+    this._previewImg = null;
+    this._previewBox = null;
+    this._chooseBtn = null;
+    if (typeof stateManager !== 'undefined') {
+      // Restore a mask by name when settings are loaded
+      stateManager.subscribe(this.id, (name) => {
+        if (typeof name === 'string' && name && (!this._item || this._item.file !== name)) {
+          this._selectByName(name);
+        }
+      });
+    }
+  }
+
+  _getSampler() {
+    return typeof maskSampler !== 'undefined' ? maskSampler : null;
+  }
+
+  _prettyName(file) {
+    return file.replace(/\.svg$/i, '').replace(/[-_]+/g, ' ').trim();
+  }
+
+  _makeItem(file) {
+    return {
+      file,
+      name: this._prettyName(file),
+      url: this.libraryPath + '/' + encodeURIComponent(file)
+    };
+  }
+
+  /**
+   * Read the library folder. manifest.json (array of file names) wins;
+   * otherwise parse .svg links out of the directory listing.
+   */
+  async _loadItems() {
+    const base = this.libraryPath + '/';
+    try {
+      const res = await fetch(base + 'manifest.json', { cache: 'no-store' });
+      if (res.ok) {
+        const list = await res.json();
+        const files = (Array.isArray(list) ? list : (list.files || []))
+          .map(f => (typeof f === 'string' ? f : f && f.file))
+          .filter(f => typeof f === 'string' && /\.svg$/i.test(f));
+        if (files.length) return files.map(f => this._makeItem(f));
+      }
+    } catch (e) { /* fall through to directory listing */ }
+
+    try {
+      const res = await fetch(base, { cache: 'no-store' });
+      if (res.ok) {
+        const html = await res.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const seen = new Set();
+        const files = [];
+        doc.querySelectorAll('a[href]').forEach(a => {
+          const href = decodeURIComponent((a.getAttribute('href') || '').split(/[?#]/)[0]);
+          const file = href.split('/').pop();
+          if (/\.svg$/i.test(file) && !seen.has(file)) {
+            seen.add(file);
+            files.push(file);
+          }
+        });
+        return files.sort().map(f => this._makeItem(f));
+      }
+    } catch (e) { /* ignore */ }
+    return [];
+  }
+
+  async _selectByName(name) {
+    const items = await this._loadItems();
+    const item = items.find(i => i.file === name);
+    if (item) this._select(item);
+  }
+
+  async _select(item) {
+    let file;
+    try {
+      const res = await fetch(item.url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const blob = await res.blob();
+      file = new File([blob], item.file, { type: 'image/svg+xml' });
+    } catch (err) {
+      console.warn('Failed to load mask from library:', item.file, err);
+      return;
+    }
+    this._applyFile(file, item);
+  }
+
+  _applyFile(file, item) {
+    this._file = file;
+    this._item = item;
+    this.value = item.file;
+    if (this._previewImg) this._previewImg.src = item.url;
+    if (this._previewBox) this._previewBox.style.display = 'block';
+    if (this._chooseBtn) this._chooseBtn.style.display = 'none';
+    stateManager.set(this.id, item.file);
+
+    // Library shapes are transparent SVGs — read the alpha channel
+    if (typeof app !== 'undefined' && app._setLinkedParameterValue) {
+      app._setLinkedParameterValue('maskChannel', 'alpha');
+    }
+
+    const sampler = this._getSampler();
+    if (sampler) {
+      sampler.loadMedia(file).then(() => {
+        stateManager.set(this.enableStateKey, true);
+      }).catch(err => console.warn('Failed to load library mask:', err));
+    }
+  }
+
+  _clear() {
+    this._file = null;
+    this._item = null;
+    this.value = null;
+    if (this._previewImg) this._previewImg.removeAttribute('src');
+    if (this._previewBox) this._previewBox.style.display = 'none';
+    if (this._chooseBtn) this._chooseBtn.style.display = '';
+    stateManager.set(this.id, null);
+    const sampler = this._getSampler();
+    if (sampler) sampler.clearMedia();
+    stateManager.set(this.enableStateKey, false);
+  }
+
+  /** Re-apply this parameter's mask to the shared mask sampler. */
+  activate() {
+    const sampler = this._getSampler();
+    if (!sampler) return;
+    if (this._file) {
+      sampler.loadMedia(this._file);
+    } else {
+      sampler.clearMedia();
+    }
+  }
+
+  async _openModal() {
+    this._closeModal();
+
+    const overlay = document.createElement('div');
+    overlay.className = 'mask-library__overlay';
+    const card = document.createElement('div');
+    card.className = 'mask-library__card';
+    card.setAttribute('role', 'dialog');
+    card.setAttribute('aria-label', 'Mask library');
+
+    const header = document.createElement('div');
+    header.className = 'mask-library__header';
+    const title = document.createElement('div');
+    title.className = 'mask-library__title';
+    title.textContent = 'Mask Library';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'mask-library__close';
+    closeBtn.textContent = '×';
+    closeBtn.title = 'Close';
+    header.appendChild(title);
+    header.appendChild(closeBtn);
+
+    const grid = document.createElement('div');
+    grid.className = 'mask-library__grid';
+    const status = document.createElement('div');
+    status.className = 'mask-library__status';
+    status.textContent = 'Loading…';
+    grid.appendChild(status);
+
+    card.appendChild(header);
+    card.appendChild(grid);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+    this._modal = overlay;
+
+    const onKey = (e) => { if (e.key === 'Escape') this._closeModal(); };
+    document.addEventListener('keydown', onKey);
+    this._modalKeyHandler = onKey;
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) this._closeModal(); });
+    closeBtn.addEventListener('click', () => this._closeModal());
+
+    const items = await this._loadItems();
+    if (this._modal !== overlay) return; // closed while loading
+    grid.innerHTML = '';
+    if (!items.length) {
+      status.textContent = 'No masks found in ' + this.libraryPath + '/';
+      grid.appendChild(status);
+      return;
+    }
+    items.forEach(item => {
+      const btn = document.createElement('button');
+      btn.className = 'mask-library__item';
+      if (this._item && this._item.file === item.file) btn.classList.add('mask-library__item--active');
+      btn.title = item.name;
+      const thumb = document.createElement('div');
+      thumb.className = 'mask-library__thumb';
+      const img = document.createElement('img');
+      img.src = item.url;
+      img.alt = item.name;
+      img.draggable = false;
+      thumb.appendChild(img);
+      const name = document.createElement('div');
+      name.className = 'mask-library__name';
+      name.textContent = item.name;
+      btn.appendChild(thumb);
+      btn.appendChild(name);
+      btn.addEventListener('click', () => {
+        this._closeModal();
+        this._select(item);
+      });
+      grid.appendChild(btn);
+    });
+  }
+
+  _closeModal() {
+    if (this._modalKeyHandler) {
+      document.removeEventListener('keydown', this._modalKeyHandler);
+      this._modalKeyHandler = null;
+    }
+    if (this._modal) {
+      this._modal.remove();
+      this._modal = null;
+    }
+  }
+
+  createControl() {
+    const container = document.createElement('div');
+    container.className = 'parameter parameter--image parameter--mask-library';
+
+    const headerRow = document.createElement('div');
+    headerRow.className = 'parameter__header';
+    headerRow.appendChild(this._createLabel());
+
+    // Preview of the chosen mask (click to pick another)
+    const preview = document.createElement('div');
+    preview.className = 'parameter__image-preview parameter__image-preview--library';
+    preview.style.display = 'none';
+    const previewImg = document.createElement('img');
+    previewImg.alt = '';
+    preview.appendChild(previewImg);
+    const clearBtn = document.createElement('button');
+    clearBtn.className = 'parameter__clear-btn';
+    clearBtn.textContent = '×';
+    clearBtn.title = 'Clear mask';
+    preview.appendChild(clearBtn);
+    preview.addEventListener('click', () => this._openModal());
+    clearBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._clear();
+    });
+
+    // The "choose from the library" button shown while nothing is selected
+    const chooseBtn = document.createElement('button');
+    chooseBtn.type = 'button';
+    chooseBtn.id = this.id;
+    chooseBtn.className = 'parameter__mask-dropzone parameter__mask-library-btn';
+    chooseBtn.textContent = this.config.buttonText || 'Choose from the library';
+    chooseBtn.addEventListener('click', () => this._openModal());
+
+    this._previewBox = preview;
+    this._previewImg = previewImg;
+    this._chooseBtn = chooseBtn;
+
+    container.appendChild(headerRow);
+    container.appendChild(preview);
+    container.appendChild(chooseBtn);
+    return container;
+  }
+}
+
 // Register tool-specific types with the shared factory
 ParameterFactory.registerType('image', ImageUploadParameter);
+ParameterFactory.registerType('mask-library', MaskLibraryParameter);
 ParameterFactory.registerType('range', RangeParameter);
 ParameterFactory.registerType('button-group', ButtonGroupParameter);

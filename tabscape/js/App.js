@@ -1201,6 +1201,8 @@ class App {
 
     const isTabLoop = mode === 'tabloop';
     const isCustom = mode === 'custom';
+    const isLibrary = mode === 'library';
+    const usesMaskImage = isCustom || isLibrary;
 
     // Tab loop params
     setVisible('maskRingRadius', isTabLoop);
@@ -1211,15 +1213,26 @@ class App {
     setVisible('maskNoiseEvolutionSpeed', isTabLoop);
     setVisible('maskNoiseSeed', isTabLoop);
 
-    // Custom params
+    // Custom + library params (both read the shared mask sampler)
     setVisible('maskCustomImage', isCustom);
-    setVisible('maskSyncWithTexture', isCustom);
-    setVisible('maskPositionX', isCustom);
-    setVisible('maskPositionY', isCustom);
-    setVisible('maskScale', isCustom);
-    setVisible('maskChannel', isCustom);
-    setVisible('maskInvert', isCustom);
-    setVisible('maskSoftness', isCustom);
+    setVisible('maskLibraryItem', isLibrary);
+    setVisible('maskSyncWithTexture', usesMaskImage);
+    setVisible('maskPositionX', usesMaskImage);
+    setVisible('maskPositionY', usesMaskImage);
+    setVisible('maskScale', usesMaskImage);
+    setVisible('maskChannel', usesMaskImage);
+    setVisible('maskInvert', usesMaskImage);
+    setVisible('maskSoftness', usesMaskImage);
+
+    // Custom and library share one mask sampler: load whichever the active
+    // mode owns (or clear it) so the canvas matches the preview shown.
+    if (usesMaskImage && this.parameterPanel && this.parameterPanel.getParameter) {
+      const owner = this.parameterPanel.getParameter(isLibrary ? 'maskLibraryItem' : 'maskCustomImage');
+      if (owner && owner.activate && owner !== this._activeMaskOwner) owner.activate();
+      this._activeMaskOwner = owner;
+    } else {
+      this._activeMaskOwner = null;
+    }
   }
 
 }

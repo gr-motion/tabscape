@@ -660,7 +660,7 @@ class GridRenderer {
         cols, rows, posX, posY, cubeWidth, cubeHeight,
         canvasWidth, canvasHeight, state, layoutW, layoutH, maskEvolutionPhase
       );
-    } else if (maskMode === 'custom' && this._maskProcessor &&
+    } else if ((maskMode === 'custom' || maskMode === 'library') && this._maskProcessor &&
                typeof maskSampler !== 'undefined' && maskSampler && maskSampler.hasImage()) {
       const channel = state.maskChannel || 'luminance';
       const maskInvert = state.maskInvert || false;
@@ -669,7 +669,7 @@ class GridRenderer {
       const maskPosY = syncMask ? (state.texturePositionY ?? 0) : (state.maskPositionY ?? 0);
       const maskScale = syncMask ? (state.textureScale ?? 100) : (state.maskScale ?? 100);
       maskSampler.setTransform(50 - maskPosX, 50 - maskPosY, maskScale, maskScale, 0);
-      maskSampler.setGridViewport(offsetX, offsetY, totalWidth, totalHeight, canvasWidth, canvasHeight);
+      maskSampler.setGridViewport(offsetX + cubeWidth / 2, offsetY + cubeHeight / 2, Math.max(1, totalWidth - cubeWidth), Math.max(1, totalHeight - cubeHeight), canvasWidth, canvasHeight);
       maskValues = this._maskProcessor.computeCustomMask(
         cols, rows, posX, posY, cubeWidth, cubeHeight,
         canvasWidth, canvasHeight, maskSampler, channel, maskInvert,
