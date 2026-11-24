@@ -187,6 +187,7 @@ class GridRenderer {
    * deterministic and resolution-independent.
    */
   updateForExport(frameDuration) {
+    this._exportFrameDt = frameDuration;
     this._updateCore(frameDuration);
   }
 
@@ -279,15 +280,88 @@ class GridRenderer {
     displaceSampler.setTransform(50 - (state.displacePositionX ?? 0), 50 - (state.displacePositionY ?? 0), refScale, refScale, 0);
     displaceSampler.setGridViewport(gridOffsetX + cubeW / 2, gridOffsetY + cubeH / 2,
       Math.max(1, totalW - cubeW), Math.max(1, totalH - cubeH), refW, refH);
-    const values = this._displaceProcessor.computeCustomMask(
+    let values = this._displaceProcessor.computeCustomMask(
       cols, rows, posX, posY, cubeW, cubeH, refW, refH, displaceSampler,
       state.displaceChannel || 'luminance', !!state.displaceInvert,
       (state.displaceSoftness ?? 0) / 100, null, 0
     );
+    if (state.displaceSmooth) values = this._applyDisplaceReaction(values, state);
     // Offsets are authored against a 1400px-wide layout so the look holds
     // when the window (or export size) changes.
     const pxScale = refW > 0 ? refW / 1400 : 1;
     return { values, dx: amountX * pxScale, dy: amountY * pxScale, ds: amountScale / 100 };
+  }
+
+  /**
+   * Smooth reaction mode for displacement. Per cell:
+   *  - when the map value rises to the Threshold (while armed), the cell
+   *    eases up to the full slider amount over Reaction Time,
+   *  - then eases back to rest over 3x Reaction Time, even if the map stays bright,
+   *  - it re-arms only after the map value drops 0.2 (20% of the 0-1 range)
+   *    below the value that triggered it.
+   * Returns a per-cell envelope (0-1) used in place of the raw map values.
+   */
+  _applyDisplaceReaction(values, state) {
+    const n = values.length;
+    let r = this._dispReact;
+    if (!r || r.n !== n) {
+      r = this._dispReact = {
+        n,
+        env: new Float32Array(n),
+        phase: new Uint8Array(n),      // 0 rest, 1 rising, 2 falling
+        prog: new Float32Array(n),
+        from: new Float32Array(n),
+        trig: new Float32Array(n),
+        armed: new Uint8Array(n).fill(1),
+        lastTime: null
+      };
+    }
+
+    // Frame time: exact frame duration while exporting, wall clock otherwise
+    const now = performance.now();
+    let dt = this._exportInProgress && this._exportFrameDt
+      ? this._exportFrameDt
+      : (r.lastTime == null ? 0 : (now - r.lastTime) / 1000);
+    r.lastTime = now;
+    dt = Math.max(0, Math.min(dt, 0.25));
+
+    const rise = Math.max(0.05, parseFloat(state.displaceReactionTime) || 0.5);
+    const fall = rise * 3;
+    const threshold = (state.displaceThreshold ?? 50) / 100;
+    const ease = (t) => t * t * (3 - 2 * t);
+    const { env, phase, prog, from, trig, armed } = r;
+
+    for (let i = 0; i < n; i++) {
+      const v = values[i];
+      if (!armed[i] && v <= Math.max(0, trig[i] - 0.2)) armed[i] = 1;
+      if (armed[i] && v >= threshold) {
+        armed[i] = 0;
+        trig[i] = v;
+        phase[i] = 1;
+        prog[i] = 0;
+        from[i] = env[i];
+      }
+      if (phase[i] === 1) {
+        prog[i] += dt / rise;
+        if (prog[i] >= 1) {
+          env[i] = 1;
+          phase[i] = 2;
+          prog[i] = 0;
+          from[i] = 1;
+        } else {
+          env[i] = from[i] + (1 - from[i]) * ease(prog[i]);
+        }
+      } else if (phase[i] === 2) {
+        prog[i] += dt / fall;
+        if (prog[i] >= 1) {
+          env[i] = 0;
+          phase[i] = 0;
+        } else {
+          env[i] = from[i] * (1 - ease(prog[i]));
+        }
+      }
+    }
+    return env;
   }
 
   _getMaskEvolutionPhase(state) {

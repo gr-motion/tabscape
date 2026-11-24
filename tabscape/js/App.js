@@ -72,8 +72,9 @@ class App {
     videoSync = new VideoSync();
 
     // Displacement controls only make sense once a map is loaded
-    stateManager.subscribe('displaceImageLoaded', (loaded) => this._updateDisplaceVisibility(!!loaded));
-    this._updateDisplaceVisibility(!!stateManager.get('displaceImageLoaded'));
+    stateManager.subscribe('displaceImageLoaded', () => this._updateDisplaceVisibility());
+    stateManager.subscribe('displaceSmooth', () => this._updateDisplaceVisibility());
+    this._updateDisplaceVisibility();
 
     // Mask noise preset → set hidden noise params
     stateManager.subscribe('maskNoise', (value) => {
@@ -1345,15 +1346,19 @@ class App {
     if (this.renderer && this.renderer.resize) this.renderer.resize(pw, ph);
   }
 
-  _updateDisplaceVisibility(loaded) {
-    const ids = ['displaceAmountX', 'displaceAmountY', 'displaceAmountScale', 'displaceChannel',
+  _updateDisplaceVisibility() {
+    const loaded = !!stateManager.get('displaceImageLoaded');
+    const smooth = !!stateManager.get('displaceSmooth');
+    const ids = ['displaceAmountX', 'displaceAmountY', 'displaceAmountScale', 'displaceSmooth', 'displaceChannel',
       'displaceInvert', 'displaceSoftness', 'displacePositionX', 'displacePositionY', 'displaceScale'];
-    for (const id of ids) {
+    const show = (id, visible) => {
       const el = document.getElementById(id);
-      if (!el) continue;
-      const row = el.closest('.parameter');
-      if (row) row.style.display = loaded ? '' : 'none';
-    }
+      const row = el && el.closest('.parameter');
+      if (row) row.style.display = visible ? '' : 'none';
+    };
+    for (const id of ids) show(id, loaded);
+    show('displaceReactionTime', loaded && smooth);
+    show('displaceThreshold', loaded && smooth);
   }
 
   _updateMaskVisibility(mode) {

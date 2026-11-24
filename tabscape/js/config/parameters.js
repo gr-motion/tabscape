@@ -543,6 +543,36 @@ const PARAMETER_CONFIG = [
     defaultValue: 0
   },
   {
+    id: 'displaceSmooth',
+    label: 'Smooth Reaction',
+    description: 'Tabs react when the map crosses the threshold: ease to the full amount, then ease back (3x slower) even if the map stays. Re-triggers after the map drops 20% below the triggering value',
+    group: 'Displacement',
+    type: 'toggle',
+    defaultValue: false
+  },
+  {
+    id: 'displaceReactionTime',
+    label: 'Reaction Time',
+    description: 'Time to reach the full amount (s). Returning to rest takes 3x longer',
+    group: 'Displacement',
+    type: 'slider',
+    min: 0.05,
+    max: 3,
+    step: 0.05,
+    defaultValue: 0.5
+  },
+  {
+    id: 'displaceThreshold',
+    label: 'Threshold',
+    description: 'Map value (%) that triggers the reaction',
+    group: 'Displacement',
+    type: 'slider',
+    min: 1,
+    max: 100,
+    step: 1,
+    defaultValue: 50
+  },
+  {
     id: 'displaceChannel',
     label: 'Map Channel',
     description: 'Which channel of the map drives the displacement',
