@@ -68,6 +68,9 @@ class App {
     this._updateMaskVisibility(stateManager.get('maskMode') || 'tabloop');
     this._setupMaskTextureSync();
 
+    // Locked uploaded videos (texture / mask / displacement) play in sync
+    videoSync = new VideoSync();
+
     // Displacement controls only make sense once a map is loaded
     stateManager.subscribe('displaceImageLoaded', (loaded) => this._updateDisplaceVisibility(!!loaded));
     this._updateDisplaceVisibility(!!stateManager.get('displaceImageLoaded'));
@@ -562,8 +565,26 @@ class App {
           }
         }
 
+        // Keep locked videos (texture / mask / displacement) in step
+        if (videoSync) videoSync.update();
+        // While the texture is in a sync group the group handles looping
+        // (hard restart at the shortest video's end), so skip the crossfade.
+        const textureSynced = !!(videoSync && videoSync.isTextureGrouped());
+        if (textureSynced && (self._fadeClone || self._loopFadeAmount)) {
+          if (self._fadeClone) {
+            self._fadeClone.pause();
+            self._fadeClone.removeAttribute('src');
+            self._fadeClone.load();
+            self._fadeClone = null;
+          }
+          self._fadeSwapping = false;
+          self._fadeCloneReady = false;
+          self._fadeStartTime = null;
+          self._fadeBackStart = null;
+        }
+
         // Loop trim with GPU crossfade using cloned video
-        if (imageSampler && imageSampler.hasVideo() && imageSampler.isPlaying) {
+        if (!textureSynced && imageSampler && imageSampler.hasVideo() && imageSampler.isPlaying) {
           const trim = (stateManager.get('loopTrim') ?? 100) / 100;
           const videoDur = imageSampler.getVideoDuration();
           const trimmedEnd = videoDur * trim;

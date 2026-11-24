@@ -344,6 +344,8 @@ class ImageSampler {
   seek(time) {
     if (this.video) {
       this.video.time(time);
+      // Locked videos follow each other's seeks
+      if (typeof videoSync !== 'undefined' && videoSync) videoSync.onSeek(this, time);
       // When paused, the draw loop won't naturally pick up the new frame.
       // Listen for the browser's seeked event, then force a buffer refresh.
       const elt = this.video.elt;

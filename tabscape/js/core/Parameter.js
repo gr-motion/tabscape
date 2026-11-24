@@ -20,6 +20,14 @@ class ImageUploadParameter extends Parameter {
     this._fileInput = null;
   }
 
+  /** stateManager key of this player's video sync lock (null = no lock). */
+  _getVideoSyncKey() {
+    if (this.targetSampler === 'maskSampler') return 'videoLockMask';
+    if (this.targetSampler === 'displaceSampler') return 'videoLockDisplace';
+    if (this.targetSampler === 'scaleVideoSampler') return null;
+    return 'videoLockTexture';
+  }
+
   _getSampler() {
     // Return the appropriate sampler based on targetSampler
     if (this.targetSampler === 'scaleVideoSampler') {
@@ -163,6 +171,24 @@ class ImageUploadParameter extends Parameter {
     videoControls.appendChild(progressWrap);
     videoControls.appendChild(timeLabel);
 
+    // Sync lock: locked videos (texture / mask / displacement) share speed,
+    // start time, play/pause and seeking, looping at the shortest one's end.
+    const syncKey = this._getVideoSyncKey();
+    if (syncKey && typeof stateManager !== 'undefined') {
+      const syncLock = document.createElement('span');
+      syncLock.className = 'parameter__lock parameter__lock--sync';
+      syncLock.innerHTML = '<svg width="8" height="10" viewBox="0 0 8 10" fill="none"><rect x="0.5" y="4.5" width="7" height="5" rx="1" stroke="currentColor"/><path d="M2 4.5V3a2 2 0 1 1 4 0v1.5" stroke="currentColor" fill="none"/></svg>';
+      syncLock.title = 'Sync: play locked videos together (same speed and start, loop at the shortest)';
+      const renderLock = (locked) => syncLock.classList.toggle('parameter__lock--active', !!locked);
+      renderLock(stateManager.get(syncKey));
+      stateManager.subscribe(syncKey, renderLock);
+      syncLock.addEventListener('click', (e) => {
+        e.preventDefault();
+        stateManager.set(syncKey, !stateManager.get(syncKey));
+      });
+      videoControls.appendChild(syncLock);
+    }
+
     const writeTime = (secs) => {
       if (document.activeElement !== timeLabel) {
         timeLabel.value = secs.toFixed(1) + 's';
@@ -224,12 +250,16 @@ class ImageUploadParameter extends Parameter {
       if (sampler && sampler.hasVideo()) {
         const progress = sampler.getVideoProgress();
         progressBar.value = progress * 100;
+        // Mirror play state changed elsewhere (e.g. by a synced video)
+        if (sampler.isPlaying === previewVideo.paused) {
+          if (sampler.isPlaying) previewVideo.play().catch(() => {});
+          else previewVideo.pause();
+          playBtn.innerHTML = sampler.isPlaying ? '\u275a\u275a' : '\u25b6';
+        }
         if (previewVideo.duration) {
           const targetTime = progress * previewVideo.duration;
-          if (sampler.isPlaying) {
-            const drift = Math.abs(previewVideo.currentTime - targetTime);
-            if (drift > 0.5) previewVideo.currentTime = targetTime;
-          }
+          const drift = Math.abs(previewVideo.currentTime - targetTime);
+          if (drift > (sampler.isPlaying ? 0.5 : 0.05)) previewVideo.currentTime = targetTime;
           writeTime(targetTime);
         }
       }
