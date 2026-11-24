@@ -854,7 +854,7 @@ class ParameterPanel extends ParameterPanelBase {
     randBtn.textContent = 'Randomize';
 
     // Groups excluded from randomization
-    const excludedGroups = new Set(['Motion', 'Fade to Color']);
+    const excludedGroups = new Set(['Motion', 'Fade to Color', 'Displacement']);
     // Param IDs that should never be randomized (mode selectors)
     const excludedIds = new Set(['maskMode', 'textureMode', 'forceDriver']);
 

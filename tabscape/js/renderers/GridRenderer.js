@@ -260,6 +260,36 @@ class GridRenderer {
     return this._smoothState[key] != null ? this._smoothState[key] : rawValue;
   }
 
+  /**
+   * Sample the displacement map for every cell.
+   * The map is placed exactly like a custom mask (fit to the layout, then
+   * offset/zoomed by its own Position/Scale). Returns null when inactive,
+   * otherwise { values, dx, dy, ds }: per-cell map values (0-1) and the
+   * offset (layout px) / scale delta applied at value 1.
+   */
+  _computeDisplacement(state, cols, rows, posX, posY, cubeW, cubeH, gridOffsetX, gridOffsetY, totalW, totalH, refW, refH) {
+    if (!this._displaceProcessor) return null;
+    if (typeof displaceSampler === 'undefined' || !displaceSampler || !displaceSampler.hasImage()) return null;
+    const amountX = state.displaceAmountX ?? 0;
+    const amountY = state.displaceAmountY ?? 0;
+    const amountScale = state.displaceAmountScale ?? 0;
+    if (!amountX && !amountY && !amountScale) return null;
+
+    const refScale = state.displaceScale ?? 100;
+    displaceSampler.setTransform(50 - (state.displacePositionX ?? 0), 50 - (state.displacePositionY ?? 0), refScale, refScale, 0);
+    displaceSampler.setGridViewport(gridOffsetX + cubeW / 2, gridOffsetY + cubeH / 2,
+      Math.max(1, totalW - cubeW), Math.max(1, totalH - cubeH), refW, refH);
+    const values = this._displaceProcessor.computeCustomMask(
+      cols, rows, posX, posY, cubeW, cubeH, refW, refH, displaceSampler,
+      state.displaceChannel || 'luminance', !!state.displaceInvert,
+      (state.displaceSoftness ?? 0) / 100, null, 0
+    );
+    // Offsets are authored against a 1400px-wide layout so the look holds
+    // when the window (or export size) changes.
+    const pxScale = refW > 0 ? refW / 1400 : 1;
+    return { values, dx: amountX * pxScale, dy: amountY * pxScale, ds: amountScale / 100 };
+  }
+
   _getMaskEvolutionPhase(state) {
     const speed = Math.max(0, Math.min(1, parseFloat(state.maskNoiseEvolutionSpeed) || 0));
 
@@ -678,6 +708,9 @@ class GridRenderer {
       );
     }
 
+    const disp = this._computeDisplacement(state, cols, rows, posX, posY, cubeWidth, cubeHeight,
+      offsetX, offsetY, totalWidth, totalHeight, canvasWidth, canvasHeight);
+
     // Compute the actual bounding box of the grid, including overshoot from
     // motion scaling (cells can grow up to ~motionScaleMax). The grid is often
     // wider/taller than the canvas (extra row, centered), so a viewBox locked
@@ -730,6 +763,17 @@ class GridRenderer {
           imageScale *= maskValues[index];
         }
 
+        // Displacement map
+        let dispX = 0, dispY = 0;
+        if (disp) {
+          const d = disp.values[index];
+          if (d) {
+            dispX = d * disp.dx;
+            dispY = d * disp.dy;
+            imageScale *= Math.max(0, 1 + d * disp.ds);
+          }
+        }
+
         // Scale Dark/Light (applied in vertex shader on GPU)
         if (hasImage) {
           imageScale *= imageBrightnessScaleMin + (imageBrightnessScaleMax - imageBrightnessScaleMin) * imageBrightness;
@@ -737,8 +781,8 @@ class GridRenderer {
 
         // Brightness variance (applied later to color, not scale)
 
-        const pushX = this._pushOffsets[index] ? this._pushOffsets[index].x : 0;
-        const pushY = this._pushOffsets[index] ? this._pushOffsets[index].y : 0;
+        const pushX = (this._pushOffsets[index] ? this._pushOffsets[index].x : 0) + dispX;
+        const pushY = (this._pushOffsets[index] ? this._pushOffsets[index].y : 0) + dispY;
         const manualScale = this._manualScaleOffsets[index] ?? 1;
 
         if (imageScale * manualScale < 0.001) continue;

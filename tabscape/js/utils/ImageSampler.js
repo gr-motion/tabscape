@@ -1263,3 +1263,4 @@ class ImageSampler {
 let imageSampler = null;
 let scaleVideoSampler = null;
 let maskSampler = null;
+let displaceSampler = null;

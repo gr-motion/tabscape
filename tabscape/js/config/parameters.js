@@ -494,6 +494,119 @@ const PARAMETER_CONFIG = [
     hidden: true
   },
 
+  // ── Displacement ──
+  // A reference image/video whose luma (or alpha) offsets and scales the tabs.
+  // Black / transparent = no change, white / opaque = full amount.
+  {
+    id: 'displaceImage',
+    label: 'Displacement Map',
+    description: 'Upload, drop or paste an image or video. Bright (or opaque) areas move and scale the tabs',
+    group: 'Displacement',
+    type: 'image',
+    targetSampler: 'displaceSampler',
+    enableStateKey: 'displaceImageLoaded',
+    dropZone: true,
+    dropZoneText: 'Drop displacement map here',
+    defaultValue: null
+  },
+  {
+    id: 'displaceAmountX',
+    label: 'Disp. Position X',
+    description: 'Horizontal tab offset at full map value (px at 1400px width)',
+    group: 'Displacement',
+    type: 'slider',
+    min: -200,
+    max: 200,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displaceAmountY',
+    label: 'Disp. Position Y',
+    description: 'Vertical tab offset at full map value (px at 1400px width)',
+    group: 'Displacement',
+    type: 'slider',
+    min: -200,
+    max: 200,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displaceAmountScale',
+    label: 'Disp. Scale',
+    description: 'Tab scale change at full map value (%). Negative shrinks, positive grows',
+    group: 'Displacement',
+    type: 'slider',
+    min: -100,
+    max: 200,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displaceChannel',
+    label: 'Map Channel',
+    description: 'Which channel of the map drives the displacement',
+    group: 'Displacement',
+    type: 'select',
+    options: [
+      { value: 'luminance', label: 'Luminance' },
+      { value: 'alpha', label: 'Alpha' }
+    ],
+    defaultValue: 'luminance'
+  },
+  {
+    id: 'displaceInvert',
+    label: 'Invert Map',
+    description: 'Flip the map values',
+    group: 'Displacement',
+    type: 'toggle',
+    defaultValue: false
+  },
+  {
+    id: 'displaceSoftness',
+    label: 'Softness',
+    description: 'Blur applied to the map before sampling',
+    group: 'Displacement',
+    type: 'slider',
+    min: 0,
+    max: 100,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displacePositionX',
+    label: 'Position X',
+    description: 'Horizontal offset of the displacement map',
+    group: 'Displacement',
+    type: 'slider',
+    min: -100,
+    max: 100,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displacePositionY',
+    label: 'Position Y',
+    description: 'Vertical offset of the displacement map',
+    group: 'Displacement',
+    type: 'slider',
+    min: -100,
+    max: 100,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displaceScale',
+    label: 'Scale',
+    description: 'Zoom level of the displacement map (aspect ratio locked)',
+    group: 'Displacement',
+    type: 'slider',
+    min: 10,
+    max: 400,
+    step: 1,
+    defaultValue: 100
+  },
+
   // ── Fade to Color (hidden – controlled by fadeToGrey toggle) ──
   {
     id: 'postFadeEnabled',

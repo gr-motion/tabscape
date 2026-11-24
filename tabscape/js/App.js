@@ -68,6 +68,10 @@ class App {
     this._updateMaskVisibility(stateManager.get('maskMode') || 'tabloop');
     this._setupMaskTextureSync();
 
+    // Displacement controls only make sense once a map is loaded
+    stateManager.subscribe('displaceImageLoaded', (loaded) => this._updateDisplaceVisibility(!!loaded));
+    this._updateDisplaceVisibility(!!stateManager.get('displaceImageLoaded'));
+
     // Mask noise preset → set hidden noise params
     stateManager.subscribe('maskNoise', (value) => {
       if (this.isLoadingSettings) return;
@@ -450,7 +454,9 @@ class App {
         self.renderer = new WebGLGridRenderer(p);
         imageSampler = new ImageSampler(p);
         maskSampler = new ImageSampler(p);
+        displaceSampler = new ImageSampler(p);
         self.renderer._maskProcessor = new MaskProcessor(p);
+        self.renderer._displaceProcessor = new MaskProcessor(p);
 
         // Initialize effect modes
         rippleManager = new RippleManager();
@@ -1316,6 +1322,17 @@ class App {
     const ph = h + 2 * MOTION_PAD;
     this.p5Instance.resizeCanvas(pw, ph);
     if (this.renderer && this.renderer.resize) this.renderer.resize(pw, ph);
+  }
+
+  _updateDisplaceVisibility(loaded) {
+    const ids = ['displaceAmountX', 'displaceAmountY', 'displaceAmountScale', 'displaceChannel',
+      'displaceInvert', 'displaceSoftness', 'displacePositionX', 'displacePositionY', 'displaceScale'];
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const row = el.closest('.parameter');
+      if (row) row.style.display = loaded ? '' : 'none';
+    }
   }
 
   _updateMaskVisibility(mode) {

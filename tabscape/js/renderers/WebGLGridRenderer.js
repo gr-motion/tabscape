@@ -753,6 +753,10 @@ class WebGLGridRenderer extends GridRenderer {
       }
     }
 
+    // Displacement map (offsets + scales tabs by map value)
+    const disp = this._computeDisplacement(state, cols, rows, this._posX, this._posY, cubeWidth, cubeHeight,
+      samplerOffsetX, samplerOffsetY, totalWidth, totalHeight, layoutW, layoutH);
+
     // UV transform params
     // Texture UV math is in the LAYOUT frame (live preview dims) — using the
     // padded canvas dims here would shift the image's effective aspect during
@@ -811,6 +815,15 @@ class WebGLGridRenderer extends GridRenderer {
         const influence = Math.min(1, pushMag / 50);
         let imageScale = motionScaleMin + (motionScaleMax - motionScaleMin) * influence;
         if (maskValues) imageScale *= maskValues[index];
+        let dispX = 0, dispY = 0;
+        if (disp) {
+          const d = disp.values[index];
+          if (d) {
+            dispX = d * disp.dx;
+            dispY = d * disp.dy;
+            imageScale *= Math.max(0, 1 + d * disp.ds);
+          }
+        }
         // Note: Scale Dark/Light applied in vertex shader
         if (imageScale * manualScale < 0.001) continue;
 
@@ -852,8 +865,8 @@ class WebGLGridRenderer extends GridRenderer {
         }
 
         // Pack
-        const cx = this._posX[index] + halfCW + pushX;
-        const cy = this._posY[index] + halfCH + pushY;
+        const cx = this._posX[index] + halfCW + pushX + dispX;
+        const cy = this._posY[index] + halfCH + pushY + dispY;
         const off = count * INST_FLOATS;
         data[off]   = cx;
         data[off+1] = cy;

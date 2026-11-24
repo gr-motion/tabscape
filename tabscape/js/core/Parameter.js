@@ -28,6 +28,9 @@ class ImageUploadParameter extends Parameter {
     if (this.targetSampler === 'maskSampler') {
       return typeof maskSampler !== 'undefined' ? maskSampler : null;
     }
+    if (this.targetSampler === 'displaceSampler') {
+      return typeof displaceSampler !== 'undefined' ? displaceSampler : null;
+    }
     return typeof imageSampler !== 'undefined' ? imageSampler : null;
   }
 
