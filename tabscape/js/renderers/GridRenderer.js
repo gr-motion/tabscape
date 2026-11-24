@@ -299,6 +299,7 @@ class GridRenderer {
    *  - then eases back to rest over 3x Reaction Time, even if the map stays bright,
    *  - it re-arms only after the map value drops 0.2 (20% of the 0-1 range)
    *    below the value that triggered it.
+   * Easing follows the Opera motion system: rise `appear`, return `standard`.
    * Returns a per-cell envelope (0-1) used in place of the raw map values.
    */
   _applyDisplaceReaction(values, state) {
@@ -328,7 +329,10 @@ class GridRenderer {
     const rise = Math.max(0.05, parseFloat(state.displaceReactionTime) || 0.5);
     const fall = rise * 3;
     const threshold = (state.displaceThreshold ?? 50) / 100;
-    const ease = (t) => t * t * (3 - 2 * t);
+    // Opera motion easing: reacting to an appearance = `appear`,
+    // returning to rest = `standard` (ordinary movement / retreat).
+    const easeRise = GridRenderer.OPERA_EASE.appear;
+    const easeFall = GridRenderer.OPERA_EASE.standard;
     const { env, phase, prog, from, trig, armed } = r;
 
     for (let i = 0; i < n; i++) {
@@ -349,7 +353,7 @@ class GridRenderer {
           prog[i] = 0;
           from[i] = 1;
         } else {
-          env[i] = from[i] + (1 - from[i]) * ease(prog[i]);
+          env[i] = from[i] + (1 - from[i]) * easeRise(prog[i]);
         }
       } else if (phase[i] === 2) {
         prog[i] += dt / fall;
@@ -357,7 +361,7 @@ class GridRenderer {
           env[i] = 0;
           phase[i] = 0;
         } else {
-          env[i] = from[i] * (1 - ease(prog[i]));
+          env[i] = from[i] * (1 - easeFall(prog[i]));
         }
       }
     }
@@ -1015,3 +1019,35 @@ class GridRenderer {
   }
 
 }
+
+/**
+ * CSS-style cubic-bezier easing (x1, y1, x2, y2) -> f(t), t in 0..1.
+ * Solved once into a lookup table so per-cell evaluation stays cheap.
+ */
+GridRenderer.cubicBezier = function (x1, y1, x2, y2) {
+  const bez = (a, b, t) => 3 * a * t * (1 - t) * (1 - t) + 3 * b * t * t * (1 - t) + t * t * t;
+  const N = 512;
+  const lut = new Float32Array(N + 1);
+  for (let i = 0; i <= N; i++) {
+    const x = i / N;
+    let lo = 0, hi = 1, s = x;
+    for (let k = 0; k < 30; k++) {          // bisection on x(s) = x
+      s = (lo + hi) / 2;
+      if (bez(x1, x2, s) < x) lo = s; else hi = s;
+    }
+    lut[i] = bez(y1, y2, s);
+  }
+  return (t) => {
+    if (t <= 0) return 0;
+    if (t >= 1) return 1;
+    const f = t * N, i = Math.floor(f);
+    return lut[i] + (lut[i + 1] - lut[i]) * (f - i);
+  };
+};
+
+// Opera brand motion curves (Opera Motion System, section 6)
+GridRenderer.OPERA_EASE = {
+  standard: GridRenderer.cubicBezier(0.3, 0, 0, 1),
+  appear: GridRenderer.cubicBezier(0, 0, 0, 1),
+  disappear: GridRenderer.cubicBezier(1, 0, 1, 1)
+};
