@@ -123,6 +123,10 @@ class MaskProcessor {
     const gridSize = cols * rows;
     this._ensureSize(gridSize);
 
+    // Video masks: pull the current frame (sampleAt reads the pixel buffer
+    // directly, so nothing else refreshes it during playback).
+    if (sampler.refreshVideoFrame) sampler.refreshVideoFrame();
+
     // GPU-accelerated source blur for spatial softness (browser canvas filter
     // is GPU-backed). Mirrors how tabloop's softness feathers the mask edge,
     // but in image space so it works for arbitrary custom masks.

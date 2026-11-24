@@ -569,6 +569,21 @@ class ImageSampler {
   }
 
   /**
+   * For video sources, copy the current frame into the pixel buffer when the
+   * playhead has moved. Call once per render frame before sampling.
+   */
+  refreshVideoFrame() {
+    if (!this.isVideo) return;
+    const currentTime = this.getVideoTime();
+    const delta = Math.abs(currentTime - this._lastFrameTime);
+    if (delta > 0.016 || !this._pixelBuffer) {
+      this.updateVideoBuffer();
+      this._cacheValid = false;
+      this._lastFrameTime = currentTime;
+    }
+  }
+
+  /**
    * Pre-cache colors for the entire grid (optimized batch sampling)
    */
   cacheGridColors(cols, rows, canvasWidth, canvasHeight) {
@@ -584,16 +599,7 @@ class ImageSampler {
     }
 
     // For video, update pixel buffer and invalidate cache each frame
-    if (this.isVideo) {
-      const currentTime = this.getVideoTime();
-      const delta = Math.abs(currentTime - this._lastFrameTime);
-      const needsUpdate = delta > 0.016 || !this._pixelBuffer;
-      if (needsUpdate) {
-        this.updateVideoBuffer();
-        this._cacheValid = false;
-        this._lastFrameTime = currentTime;
-      }
-    }
+    this.refreshVideoFrame();
 
     // Check if hueOffset changed (invalidate cache if so)
     const curHueOffset = (typeof stateManager !== 'undefined' ? stateManager.get('imageHueOffset') : 0) || 0;
