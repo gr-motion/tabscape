@@ -1359,6 +1359,8 @@ class App {
     for (const id of ids) show(id, loaded);
     show('displaceReactionTime', loaded && smooth);
     show('displaceThreshold', loaded && smooth);
+    show('displaceReactionRadius', loaded && smooth);
+    show('displaceReactionSpread', loaded && smooth);
   }
 
   _updateMaskVisibility(mode) {

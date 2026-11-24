@@ -562,6 +562,28 @@ const PARAMETER_CONFIG = [
     defaultValue: 0.5
   },
   {
+    id: 'displaceReactionRadius',
+    label: 'Radius',
+    description: 'Tabs within this distance (px at 1400px width) of a reacting tab react too, weaker with distance. 0 = only the triggering tab',
+    group: 'Displacement',
+    type: 'slider',
+    min: 0,
+    max: 300,
+    step: 1,
+    defaultValue: 100
+  },
+  {
+    id: 'displaceReactionSpread',
+    label: 'Spread',
+    description: 'Share of the radius used as a soft falloff (%). 0 = full strength up to a hard edge, 100 = fades from the centre',
+    group: 'Displacement',
+    type: 'slider',
+    min: 0,
+    max: 100,
+    step: 1,
+    defaultValue: 100
+  },
+  {
     id: 'displaceThreshold',
     label: 'Threshold',
     description: 'Map value (%) that triggers the reaction',

@@ -285,7 +285,11 @@ class GridRenderer {
       state.displaceChannel || 'luminance', !!state.displaceInvert,
       (state.displaceSoftness ?? 0) / 100, null, 0
     );
-    if (state.displaceSmooth) values = this._applyDisplaceReaction(values, state);
+    if (state.displaceSmooth) {
+      values = this._applyDisplaceReaction(values, state);
+      const radius = (state.displaceReactionRadius ?? 0) * (refW > 0 ? refW / 1400 : 1);
+      if (radius > 0) values = this._spreadDisplaceReaction(values, cols, rows, posX, posY, radius, (state.displaceReactionSpread ?? 100) / 100);
+    }
     // Offsets are authored against a 1400px-wide layout so the look holds
     // when the window (or export size) changes.
     const pxScale = refW > 0 ? refW / 1400 : 1;
@@ -366,6 +370,78 @@ class GridRenderer {
       }
     }
     return env;
+  }
+
+  /**
+   * Spread each reacting tab's envelope to its neighbours within `radius`
+   * (layout px), weighted by distance: full strength up to radius*(1-spread),
+   * then a smooth falloff to 0 at the radius. Overlapping reactions take the
+   * strongest value (no summing). Cells whose neighbours all react at least
+   * as strongly are skipped: their contribution is covered by the neighbours.
+   */
+  _spreadDisplaceReaction(env, cols, rows, posX, posY, radius, spread) {
+    const n = env.length;
+    if (cols < 2 || rows < 2 || n !== cols * rows) return env;
+    const stepX = Math.abs(posX[1] - posX[0]) || 1;
+    const stepY = Math.abs(posY[cols] - posY[0]) || 1;
+    const rowShift = posX[cols] - posX[0]; // odd-row brick offset
+
+    // Kernel per source-row parity: [dRow, dCol, weight] triples
+    const key = [radius.toFixed(2), spread.toFixed(3), stepX.toFixed(3), stepY.toFixed(3), rowShift.toFixed(3)].join('|');
+    if (!this._dispKernel || this._dispKernel.key !== key) {
+      const inner = radius * (1 - spread);
+      const falloff = Math.max(1e-6, radius - inner);
+      const weight = (d) => {
+        if (d <= inner) return 1;
+        const t = Math.min(1, (radius - d) / falloff);
+        return t * t * (3 - 2 * t);
+      };
+      const kr = Math.ceil(radius / stepY), kc = Math.ceil(radius / stepX) + 1;
+      const kernels = [[], []];
+      for (let parity = 0; parity < 2; parity++) {
+        for (let dr = -kr; dr <= kr; dr++) {
+          const targetOdd = ((parity + dr) % 2 + 2) % 2;
+          const shift = (targetOdd ? rowShift : 0) - (parity ? rowShift : 0);
+          for (let dc = -kc; dc <= kc; dc++) {
+            if (dr === 0 && dc === 0) continue;
+            const d = Math.hypot(dc * stepX + shift, dr * stepY);
+            if (d >= radius) continue;
+            const w = weight(d);
+            if (w > 0.001) kernels[parity].push(dr, dc, w);
+          }
+        }
+      }
+      this._dispKernel = { key, kernels };
+    }
+    const kernels = this._dispKernel.kernels;
+
+    if (!this._dispSpreadOut || this._dispSpreadOut.length !== n) this._dispSpreadOut = new Float32Array(n);
+    const out = this._dispSpreadOut;
+    out.set(env);
+
+    for (let row = 0; row < rows; row++) {
+      const base = row * cols;
+      const k = kernels[row & 1];
+      // brick neighbours on the rows above/below sit at col and col +/- 1
+      for (let col = 0; col < cols; col++) {
+        const e = env[base + col];
+        if (e <= 0.001) continue;
+        if (row > 0 && row < rows - 1 && col > 0 && col < cols - 1 &&
+            env[base + col - 1] >= e && env[base + col + 1] >= e &&
+            env[base - cols + col - 1] >= e && env[base - cols + col] >= e && env[base - cols + col + 1] >= e &&
+            env[base + cols + col - 1] >= e && env[base + cols + col] >= e && env[base + cols + col + 1] >= e) {
+          continue;
+        }
+        for (let j = 0; j < k.length; j += 3) {
+          const r = row + k[j], c = col + k[j + 1];
+          if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
+          const v = e * k[j + 2];
+          const idx = r * cols + c;
+          if (v > out[idx]) out[idx] = v;
+        }
+      }
+    }
+    return out;
   }
 
   _getMaskEvolutionPhase(state) {
