@@ -505,6 +505,11 @@ class ImageSampler {
     const h = this._bufferHeight;
     let x, y;
 
+    // Outside the image there is nothing to sample (except tile, which wraps).
+    // Without this, _getPixelFromBuffer clamps to the edge pixels and smears
+    // the image's border rows/columns across the rest of the canvas.
+    if (this.mappingMode !== 'tile' && (u < 0 || u > 1 || v < 0 || v > 1)) return null;
+
     switch (this.mappingMode) {
       case 'stretch':
         x = u * (w - 1);
