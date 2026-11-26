@@ -928,3 +928,146 @@ body.motion-value-dragging {
 .parameter__lock--sync.parameter__lock--active {
   color: var(--text-primary);
 }
+
+/* ─── Settings library (Save / Load window) ──────────────── */
+.settings-lib__overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(14, 14, 12, 0.7);
+}
+
+.settings-lib__card {
+  width: min(520px, calc(100vw - 32px));
+  max-height: min(680px, calc(100vh - 32px));
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--card-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--card-radius);
+  padding: calc(20px * var(--s) * 1.3);
+  box-sizing: border-box;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  color: var(--text-primary);
+}
+
+.settings-lib__header { display: flex; align-items: center; justify-content: space-between; }
+.settings-lib__title { font-family: 'Söhne Breit', 'Söhne', sans-serif; font-size: 16px; }
+
+.settings-lib__close {
+  width: 24px; height: 24px;
+  border: 1px solid var(--input-border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px; line-height: 1;
+  cursor: pointer;
+}
+.settings-lib__close:hover { border-color: var(--accent-color); color: var(--text-primary); }
+
+.settings-lib__save { display: flex; gap: 8px; }
+.settings-lib__save .settings-bar__btn { flex: 0 0 auto; padding: 0 16px; }
+
+.settings-lib__name-input,
+.settings-lib__rename {
+  font-family: 'Söhne Mono', monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid var(--input-border);
+  border-radius: 100px;
+  box-sizing: border-box;
+}
+.settings-lib__name-input { flex: 1; min-width: 0; height: var(--btn-height); padding: 0 14px; }
+.settings-lib__name-input::placeholder { color: var(--text-muted); }
+
+.settings-lib__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  min-height: 80px;
+}
+
+.settings-lib__status {
+  padding: 24px 0;
+  text-align: center;
+  font-family: 'Söhne Mono', monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.settings-lib__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border: 1px solid var(--input-border);
+  border-radius: 12px;
+}
+
+.settings-lib__thumb {
+  flex: 0 0 auto;
+  width: 72px; height: 48px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--canvas-bg);
+}
+.settings-lib__thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.settings-lib__info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.settings-lib__rename {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  border-color: transparent;
+  border-radius: 6px;
+  text-overflow: ellipsis;
+}
+.settings-lib__rename:hover { border-color: var(--input-border); }
+.settings-lib__rename:focus { outline: none; border-color: var(--accent-hover); }
+.settings-lib__date { padding-left: 9px; font-family: 'Söhne Mono', monospace; font-size: 10px; color: var(--text-muted); }
+
+.settings-lib__actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+.settings-lib__btn { height: 28px; padding: 0 12px; }
+
+.settings-lib__icon {
+  width: 28px; height: 28px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--input-border);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.settings-lib__icon:hover { border-color: var(--accent-hover); color: var(--text-primary); }
+
+.settings-lib__file-btn { align-self: flex-start; flex: 0 0 auto; height: 32px; padding: 0 16px; }
+.settings-lib__file-btn.is-active { background: var(--text-primary); border-color: var(--text-primary); color: var(--card-bg); }
+
+.settings-lib__drop {
+  padding: 22px 12px;
+  border: 1px dashed var(--input-border);
+  border-radius: 12px;
+  text-align: center;
+  font-family: 'Söhne Mono', monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.settings-lib__drop:hover,
+.settings-lib__drop:focus-visible,
+.settings-lib__drop.is-over { border-color: var(--accent-hover); color: var(--text-primary); outline: none; }
+
+.settings-lib__note {
+  padding-top: 10px;
+  border-top: 1px solid var(--input-border);
+  font-family: 'Söhne Mono', monospace;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}

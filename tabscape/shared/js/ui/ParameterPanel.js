@@ -312,17 +312,17 @@ class ParameterPanelBase {
     const saveBtn = document.createElement('button');
     saveBtn.className = 'settings-bar__btn';
     saveBtn.textContent = 'Save Settings';
-    saveBtn.addEventListener('click', () => this._saveSettings());
+    saveBtn.addEventListener('click', () => this._openSettingsLibrary(true));
 
     const loadBtn = document.createElement('button');
     loadBtn.className = 'settings-bar__btn';
     loadBtn.textContent = 'Load Settings';
-    loadBtn.addEventListener('click', () => this._triggerLoadSettings());
+    loadBtn.addEventListener('click', () => this._openSettingsLibrary(false));
 
     const motionBtn = document.createElement('button');
     motionBtn.className = 'settings-bar__btn settings-bar__btn--motion';
     motionBtn.type = 'button';
-    motionBtn.textContent = 'Motion';
+    motionBtn.textContent = 'Animation Mode';
     motionBtn.addEventListener('click', () => {
       if (window.animationController) {
         window.animationController.toggleMotion();
@@ -383,7 +383,11 @@ class ParameterPanelBase {
 
     const header = document.createElement('div');
     header.className = 'parameter-group__header';
-    header.innerHTML = '<span class="parameter-group__title">' + name + '</span>';
+    // Display label can differ from the internal group id (kept stable for
+    // presets, saved settings and the HTML export).
+    const GROUP_LABELS = { Motion: 'Effects' };
+    group.dataset.group = name;
+    header.innerHTML = '<span class="parameter-group__title">' + (GROUP_LABELS[name] || name) + '</span>';
 
     const chevron = document.createElement('img');
     chevron.className = 'card__chevron';
@@ -421,7 +425,31 @@ class ParameterPanelBase {
 
   // -- Save / Load / Export --------------------------------------
 
+  /** Save / Load window (browser-local library); falls back to file I/O. */
+  _openSettingsLibrary(focusSave) {
+    if (typeof SettingsLibrary === 'undefined') {
+      if (focusSave) this._saveSettings(); else this._triggerLoadSettings();
+      return;
+    }
+    if (!this._settingsLibrary) this._settingsLibrary = new SettingsLibrary(this);
+    this._settingsLibrary.open({ focusSave });
+  }
+
   _saveSettings() {
+    const json = JSON.stringify(this._collectSettings(), null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = this._getSettingsFilePrefix() + '-' + this._exportTimestamp() + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  /** Everything a settings file holds (state, locks, tool extras). */
+  _collectSettings() {
     const state = stateManager.getAll();
     const settings = {};
     for (const [key, value] of Object.entries(state)) {
@@ -437,17 +465,7 @@ class ParameterPanelBase {
     if (Object.keys(locks).length > 0) settings._locks = locks;
 
     Object.assign(settings, this._getExtraSettingsData());
-
-    const json = JSON.stringify(settings, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = this._getSettingsFilePrefix() + '-' + this._exportTimestamp() + '.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    return settings;
   }
 
   _triggerLoadSettings() {

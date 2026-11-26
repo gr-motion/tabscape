@@ -657,8 +657,7 @@ class ParameterPanel extends ParameterPanelBase {
       const groups = content.querySelectorAll('.parameter-group');
       let motionGroup = null;
       groups.forEach(g => {
-        const title = g.querySelector('.parameter-group__title');
-        if (title && title.textContent.trim() === 'Motion') motionGroup = g;
+        if (g.dataset.group === 'Motion') motionGroup = g;
       });
 
       if (motionGroup) {
