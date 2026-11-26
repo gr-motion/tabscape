@@ -1209,9 +1209,10 @@ class App {
     setVisible('maskRingThickness', isTabLoop);
     setVisible('maskInnerSoftness', isTabLoop);
     setVisible('maskOuterSoftness', isTabLoop);
-    setVisible('maskNoise', isTabLoop);
-    setVisible('maskNoiseEvolutionSpeed', isTabLoop);
-    setVisible('maskNoiseSeed', isTabLoop);
+    // Noise + evolution apply to every mask mode (ring edges or image warp)
+    setVisible('maskNoise', true);
+    setVisible('maskNoiseEvolutionSpeed', true);
+    setVisible('maskNoiseSeed', true);
 
     // Custom + library params (both read the shared mask sampler)
     setVisible('maskCustomImage', isCustom);

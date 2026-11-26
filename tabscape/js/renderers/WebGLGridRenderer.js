@@ -744,6 +744,14 @@ class WebGLGridRenderer extends GridRenderer {
         maskSampler.setTransform(50 - maskPosX, 50 - maskPosY, maskScale, maskScale, 0);
         maskSampler.setGridViewport(samplerOffsetX + cubeWidth / 2, samplerOffsetY + cubeHeight / 2, Math.max(1, totalWidth - cubeWidth), Math.max(1, totalHeight - cubeHeight), layoutW, layoutH);
         maskValues = this._maskProcessor.computeCustomMask(cols, rows, this._posX, this._posY, cubeWidth, cubeHeight, layoutW, layoutH, maskSampler, state.maskChannel || 'luminance', state.maskInvert || false, (state.maskSoftness ?? 0) / 100);
+        // Unwarped values for the HTML export, which re-applies the noise warp live.
+        if (this._bakeCapture) this._bakeCapture.maskBase = Float32Array.from(maskValues.subarray(0, cols * rows));
+        // Noise + evolution: wobble the mask edges like the tab loop ring does.
+        if ((parseFloat(state.maskNoise) || 0) > 0) {
+          maskValues = this._maskProcessor.applyNoiseWarp(
+            maskValues, cols, rows, cellStepX, cellStepY, state, layoutW,
+            this._getMaskEvolutionPhase(state), (x, y, z) => this.p.noise(x, y, z));
+        }
         if (!this._maskValLogDone) {
           const vals = maskValues;
           let min = 1, max = 0, sum = 0;

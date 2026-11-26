@@ -103,12 +103,14 @@ class HTMLExporter {
     // Static (custom / library) mask, once per cell. The ring mask is live.
     const maskMode = state.maskMode || 'tabloop';
     let staticMask = null, maskMax = 1;
-    if (maskMode !== 'tabloop' && probe.mask) {
+    // Stored unwarped: the runtime applies the noise warp + evolution live.
+    const baseMask = probe.maskBase || probe.mask;
+    if (maskMode !== 'tabloop' && baseMask) {
       maskMax = 0;
-      for (let i = 0; i < N; i++) if (probe.mask[i] > maskMax) maskMax = probe.mask[i];
+      for (let i = 0; i < N; i++) if (baseMask[i] > maskMax) maskMax = baseMask[i];
       if (!(maskMax > 0)) maskMax = 1;
       staticMask = new Uint8Array(N);
-      for (let i = 0; i < N; i++) staticMask[i] = Math.round(Math.max(0, probe.mask[i]) / maskMax * 255);
+      for (let i = 0; i < N; i++) staticMask[i] = Math.round(Math.max(0, baseMask[i]) / maskMax * 255);
     }
 
     // ── Colour pipeline from a normal live render ──

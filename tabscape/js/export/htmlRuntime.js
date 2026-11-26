@@ -277,6 +277,32 @@
     return ringBuf;
   };
 
+  // Image masks: noise warp + evolution (mirrors MaskProcessor.applyNoiseWarp)
+  const baseMask = new Float32Array(N), warpBuf = new Float32Array(N);
+  if (staticMask) for (let i = 0; i < N; i++) baseMask[i] = staticMask[i] * M.maskMax / 255;
+  const warpMask = (evo) => {
+    const amount = parseFloat(state.maskNoise) || 0;
+    if (amount <= 0) return baseMask;
+    const stepX = M.cubeWidth + M.spacingX, stepY = M.cubeHeight + M.spacingY;
+    const ringScale = M.layoutW / 1400, ampPx = amount * ringScale;
+    const freq = ((state.maskRingNoiseScale ?? 0.5) / 0.5) / (400 * ringScale);
+    const so = (state.maskNoiseSeed ?? 0) * 7.31;
+    const at = (c, r) => (c < 0 || r < 0 || c >= cols || r >= rows) ? 0 : baseMask[r * cols + c];
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const px = c * stepX + (r % 2 === 1 ? stepX * 0.5 : 0), py = r * stepY;
+      const nx = px * freq, ny = py * freq;
+      const dx = (noise3(nx + 50 + so, ny + 50 + so, evo) - 0.5) * 2 * ampPx;
+      const dy = (noise3(nx + 150 + so, ny + 150 + so, evo + 17.3) - 0.5) * 2 * ampPx;
+      const rf = (py + dy) / stepY;
+      const cf = (px + dx) / stepX - (Math.round(rf) % 2 === 1 ? 0.5 : 0);
+      const c0 = Math.floor(cf), r0 = Math.floor(rf), tx = cf - c0, ty = rf - r0;
+      const a = at(c0, r0) + (at(c0 + 1, r0) - at(c0, r0)) * tx;
+      const b = at(c0, r0 + 1) + (at(c0 + 1, r0 + 1) - at(c0, r0 + 1)) * tx;
+      warpBuf[r * cols + c] = a + (b - a) * ty;
+    }
+    return warpBuf;
+  };
+
   // ── State + motion timeline ──
   const state = Object.assign({}, D.state);
   const motion = D.motion;
@@ -455,8 +481,8 @@
       gl.uniform4f(uloc('u_kf'), 1, 0, TX.gh, TX.amp);
     }
     gl.uniform1f(uloc('u_time'), texTime);
-    const mask = M.maskMode === 'tabloop' ? ringMask(evoPhase) : null;
-    const mScale = M.maskMax / 255;
+    const mask = M.maskMode === 'tabloop' ? ringMask(evoPhase)
+      : staticMask ? warpMask(evoPhase) : null;
 
     // Motion-driven uniforms (may be keyframed)
     const sMin = sm('scaleMin', 100) / 100;
@@ -474,7 +500,7 @@
       for (let c = 0; c < cols; c++) {
         const i = r * cols + c;
         if (!valid[i]) continue;
-        const m = mask ? mask[i] : staticMask ? staticMask[i] * mScale : 1;
+        const m = mask ? mask[i] : 1;
         if (m <= 0) continue;
         const p = push[i];
         const px = p ? p.x : 0, py = p ? p.y : 0;

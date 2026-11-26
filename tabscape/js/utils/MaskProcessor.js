@@ -194,6 +194,42 @@ class MaskProcessor {
   }
 
   /**
+   * Noise warp for image masks (custom / library): every cell samples the
+   * unwarped per-cell mask at a position displaced by two Perlin fields, so
+   * the shape's edges wobble the way the tab loop ring's do. Uses the same
+   * Noise / Noise Evolution Speed / Noise Seed settings. Mirrored 1:1 by the
+   * HTML export runtime (js/export/htmlRuntime.js).
+   */
+  applyNoiseWarp(values, cols, rows, stepX, stepY, state, layoutW, evolution, noise) {
+    const amount = parseFloat(state.maskNoise) || 0;
+    const gridSize = cols * rows;
+    if (amount <= 0 || !values) return values;
+    if (!this._warpValues || this._warpValues.length !== gridSize) this._warpValues = new Float32Array(gridSize);
+    const out = this._warpValues;
+    const ringScale = (layoutW > 0 ? layoutW : 1400) / 1400;
+    const ampPx = amount * ringScale;
+    const freq = ((state.maskRingNoiseScale ?? 0.5) / 0.5) / (400 * ringScale);
+    const so = (state.maskNoiseSeed ?? 0) * 7.31;
+    const at = (c, r) => (c < 0 || r < 0 || c >= cols || r >= rows) ? 0 : values[r * cols + c];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const px = c * stepX + (r % 2 === 1 ? stepX * 0.5 : 0);
+        const py = r * stepY;
+        const nx = px * freq, ny = py * freq;
+        const dx = (noise(nx + 50 + so, ny + 50 + so, evolution) - 0.5) * 2 * ampPx;
+        const dy = (noise(nx + 150 + so, ny + 150 + so, evolution + 17.3) - 0.5) * 2 * ampPx;
+        const rf = (py + dy) / stepY;
+        const cf = (px + dx) / stepX - (Math.round(rf) % 2 === 1 ? 0.5 : 0);
+        const c0 = Math.floor(cf), r0 = Math.floor(rf), tx = cf - c0, ty = rf - r0;
+        const a = at(c0, r0) + (at(c0 + 1, r0) - at(c0, r0)) * tx;
+        const b = at(c0, r0 + 1) + (at(c0 + 1, r0 + 1) - at(c0, r0 + 1)) * tx;
+        out[r * cols + c] = a + (b - a) * ty;
+      }
+    }
+    return out;
+  }
+
+  /**
    * GPU-blur the mask source image (or current video frame) and return its
    * pixel buffer. Cached by source identity, dimensions, blur radius, and
    * (for video) frame counter so we only re-blur when something changes.
