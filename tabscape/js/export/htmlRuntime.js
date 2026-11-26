@@ -248,8 +248,11 @@
   const layout = () => {
     dpr = Math.min(2, window.devicePixelRatio || 1);
     const vw = window.innerWidth, vh = window.innerHeight;
-    const s = Math.min(vw / W, vh / H);
-    rect = { w: W * s, h: H * s, x: (vw - W * s) / 2, y: (vh - H * s) / 2 };
+    // Fit the composition (not the motion padding around it) to the window,
+    // like the app: the padding spills past the viewport edges.
+    const s = Math.min(vw / M.layoutW, vh / M.layoutH);
+    const padX = (W - M.layoutW) / 2, padY = (H - M.layoutH) / 2;
+    rect = { w: W * s, h: H * s, x: (vw - M.layoutW * s) / 2 - padX * s, y: (vh - M.layoutH * s) / 2 - padY * s };
     canvas.style.width = rect.w + 'px'; canvas.style.height = rect.h + 'px';
     canvas.style.left = rect.x + 'px'; canvas.style.top = rect.y + 'px';
     canvas.width = Math.round(rect.w * dpr); canvas.height = Math.round(rect.h * dpr);
@@ -262,8 +265,10 @@
   const toCanvas = (e) => ({ x: (e.clientX - rect.x) / rect.w * W, y: (e.clientY - rect.y) / rect.h * H });
   const inside = (p) => p.x >= 0 && p.x <= W && p.y >= 0 && p.y <= H;
   window.addEventListener('pointermove', (e) => { const p = toCanvas(e); mouseX = p.x; mouseY = p.y; });
-  canvas.addEventListener('pointerenter', () => cursorTracker.setActive(true));
-  canvas.addEventListener('pointerleave', () => cursorTracker.setActive(false));
+  // Like the app: active whenever the pointer is over the canvas (checked per
+  // frame), inactive once it leaves the page.
+  document.addEventListener('pointerleave', () => { mouseX = mouseY = -1e5; cursorTracker.setActive(false); });
+  window.addEventListener('blur', () => cursorTracker.setActive(false));
   window.addEventListener('pointerdown', (e) => {
     const p = toCanvas(e); mouseX = p.x; mouseY = p.y;
     if (!paused && inside(p)) activeMode.onMousePressed(p.x, p.y, state);
@@ -285,6 +290,9 @@
   applyMotion();
   setMode(state.effectMode === 'attractor' ? 'attractor' : 'ripple');
 
+  // Small public handle: tweak motion params live, e.g. tabscape.state.cursorRadius = 400
+  window.tabscape = { state, get pushOffsets() { return push; }, get paused() { return paused; } };
+
   const frame = (now) => {
     const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
     last = now;
@@ -297,6 +305,7 @@
         if (wanted !== activeModeName) setMode(wanted);
       }
       cursorTracker.update(mouseX, mouseY, dt);
+      if (inside({ x: mouseX, y: mouseY }) && !cursorTracker.isActive) cursorTracker.setActive(true);
       if (rippleManager.hasActiveRipples()) rippleManager.update(state.rippleSpeed || 300);
       updatePhysics(dt);
       bakeTime += dt;
