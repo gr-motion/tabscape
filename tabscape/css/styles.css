@@ -1071,3 +1071,11 @@ body.motion-value-dragging {
   line-height: 1.5;
   color: var(--text-muted);
 }
+
+.settings-bar__note {
+  margin-top: 6px;
+  font-family: 'Söhne Mono', monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  color: var(--text-muted);
+}

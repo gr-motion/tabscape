@@ -311,13 +311,8 @@ class ParameterPanelBase {
 
     const saveBtn = document.createElement('button');
     saveBtn.className = 'settings-bar__btn';
-    saveBtn.textContent = 'Save Settings';
-    saveBtn.addEventListener('click', () => this._openSettingsLibrary(true));
-
-    const loadBtn = document.createElement('button');
-    loadBtn.className = 'settings-bar__btn';
-    loadBtn.textContent = 'Load Settings';
-    loadBtn.addEventListener('click', () => this._openSettingsLibrary(false));
+    saveBtn.textContent = 'Save/Load Settings';
+    saveBtn.addEventListener('click', () => this._openSettingsLibrary(false));
 
     const motionBtn = document.createElement('button');
     motionBtn.className = 'settings-bar__btn settings-bar__btn--motion';
@@ -342,7 +337,6 @@ class ParameterPanelBase {
     this._loadInput = loadInput;
 
     bar.appendChild(saveBtn);
-    bar.appendChild(loadBtn);
     bar.appendChild(motionBtn);
     bar.appendChild(loadInput);
 
