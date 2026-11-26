@@ -10,41 +10,46 @@
  * instances. Each instance only carries position, scale and a texel index,
  * so the whole grid is a single draw call.
  *
- * Colours + mask come from one tiny media atlas: top half = per-cell texture
- * colour, bottom half = per-cell mask (0 also hides cells off the texture).
- * Animated scenes ship it as an H.264 video, static ones as a PNG.
+ * Colours come from a compact texture model: a low-res keyframe atlas the
+ * shader interpolates in space and time, plus animated grain. The ring mask
+ * (with Perlin noise + evolution) is computed live; custom masks are stored
+ * once per cell.
  *
  * Expects window.__TABSCAPE__ = { meta, vert, frag, uniforms, textures, state,
- * motion } and the media as base64 in <script id="tsmedia">.
+ * motion } and base64(gzip(payload)) in <script id="tsmedia">.
  */
 (async function () {
   'use strict';
   const D = window.__TABSCAPE__;
   const M = D.meta;
-  const b64ToBytes = (b64) => {
-    const bin = atob(b64);
-    const out = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-    return out;
-  };
   const cols = M.cols, rows = M.rows, N = cols * rows;
 
-  // ── Media atlas ──
+  // ── Payload: [texture keyframes][valid cells][static mask?] ──
   const mediaEl = document.getElementById('tsmedia');
-  const mediaUrl = URL.createObjectURL(new Blob([b64ToBytes(mediaEl.textContent.trim())], { type: M.media.mime }));
+  const bin = atob(mediaEl.textContent.trim());
   mediaEl.remove();
-  let media;
-  if (M.media.kind === 'video') {
-    media = document.createElement('video');
-    media.muted = true; media.loop = true; media.playsInline = true; media.autoplay = true;
-    media.setAttribute('playsinline', '');
-    media.src = mediaUrl;
-    await new Promise((res, rej) => { media.onloadeddata = res; media.onerror = () => rej(new Error('This browser cannot play the embedded H.264 video')); });
-    media.play().catch(() => {});
-  } else {
-    media = new Image();
-    media.src = mediaUrl;
-    await media.decode();
+  const gz = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) gz[i] = bin.charCodeAt(i);
+  const payload = new Uint8Array(await new Response(new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+  const TX = M.tex, T = TX.gw * TX.gh;
+  let po = 0;
+  const texEnc = M.hasTexture ? payload.subarray(po, po += T * TX.K * 3) : null;
+  const valid = payload.subarray(po, po += N);
+  const staticMask = M.hasStaticMask ? payload.subarray(po, po += N) : null;
+  // Keyframe atlas (gw x gh*K, RGBA): undo planar layout + temporal deltas.
+  let atlas = null;
+  if (texEnc) {
+    atlas = new Uint8Array(T * TX.K * 4);
+    let o = 0;
+    for (let ch = 0; ch < 3; ch++) {
+      for (let k = 0; k < TX.K; k++) {
+        for (let t = 0; t < T; t++) {
+          const prev = k > 0 ? atlas[((k - 1) * T + t) * 4 + ch] : 0;
+          atlas[(k * T + t) * 4 + ch] = (prev + texEnc[o++]) & 255;
+        }
+      }
+    }
+    for (let i = 0; i < T * TX.K; i++) atlas[i * 4 + 3] = 255;
   }
 
   // Squircle corner SDF (same construction as WebGLGridRenderer._buildCornerSDFTexture:
@@ -155,24 +160,16 @@
     if (info.float) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, info.w, info.h, 0, gl.RGBA, gl.FLOAT, new Float32Array(info.data));
     else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, info.w, info.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(info.data));
   }
-  // Unit 0 = media atlas (colours + mask). Video atlas is 2x per cell, so
-  // LINEAR at the cell centre averages that cell's 2x2 block.
-  const texMedia = makeTex(0, M.media.scale > 1 ? gl.LINEAR : gl.NEAREST);
-  gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-  const uploadMedia = () => {
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, texMedia);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, media);
-  };
-  uploadMedia();
+  // Unit 0 = texture keyframe atlas (LINEAR = bilinear between texels)
+  makeTex(0, gl.LINEAR);
+  if (atlas) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, TX.gw, TX.gh * TX.K, 0, gl.RGBA, gl.UNSIGNED_BYTE, atlas);
   makeTex(9, gl.NEAREST);
   gl.uniform1i(uloc('u_srcTexture'), 0);
   gl.uniform1i(uloc('u_prevTexture'), 9);
   gl.uniform1f(uloc('u_loopFade'), 0);
   gl.uniform1f(uloc('u_frameBlend'), 1);
-  gl.uniform2f(uloc('u_gridDim'), cols, rows);
-  gl.uniform1f(uloc('u_maskMax'), M.maskMax);
-  gl.uniform1f(uloc('u_maskFloor'), M.media.kind === 'video' ? 0.03 : 0);
+  gl.uniform2f(uloc('u_atlasScale'), cols / (TX.d * TX.gw), rows / (TX.d * TX.gh));
+  gl.uniform2f(uloc('u_cells'), cols, rows);
   gl.uniform1i(uloc('u_hasTexture'), M.hasTexture ? 1 : 0);
   gl.uniform2f(uloc('u_resolution'), M.canvasW, M.canvasH);
 
@@ -211,6 +208,74 @@
     homeX[i] = M.offsetX + (r % 2 === 1 ? cellStepX * 0.5 : 0) + c * cellStepX + halfCW;
     homeY[i] = M.offsetY + r * cellStepY + halfCH;
   }
+
+  // ── Live ring mask (mirrors MaskProcessor.computeRingMask) ──
+  // p5-style Perlin noise with a seeded table: same character as the app,
+  // not the same random pattern (the app's table is random per session).
+  const perlin = (() => {
+    let a = 0x9e3779b9;
+    const rnd = () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+    const P = new Float32Array(4096);
+    for (let i = 0; i < 4096; i++) P[i] = rnd();
+    return P;
+  })();
+  const sc = (i) => 0.5 * (1 - Math.cos(i * Math.PI));
+  const noise3 = (x, y, z) => {
+    x = Math.abs(x); y = Math.abs(y); z = Math.abs(z);
+    let xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+    let xf = x - xi, yf = y - yi, zf = z - zi, r = 0, amp = 0.5;
+    for (let o = 0; o < 4; o++) {
+      let of = xi + (yi << 4) + (zi << 8);
+      const rx = sc(xf), ry = sc(yf);
+      let n1 = perlin[of & 4095]; n1 += rx * (perlin[(of + 1) & 4095] - n1);
+      let n2 = perlin[(of + 16) & 4095]; n2 += rx * (perlin[(of + 17) & 4095] - n2);
+      n1 += ry * (n2 - n1);
+      of += 256;
+      n2 = perlin[of & 4095]; n2 += rx * (perlin[(of + 1) & 4095] - n2);
+      let n3 = perlin[(of + 16) & 4095]; n3 += rx * (perlin[(of + 17) & 4095] - n3);
+      n2 += ry * (n3 - n2);
+      n1 += sc(zf) * (n2 - n1);
+      r += n1 * amp; amp *= 0.5;
+      xi <<= 1; xf *= 2; yi <<= 1; yf *= 2; zi <<= 1; zf *= 2;
+      if (xf >= 1) { xi++; xf--; } if (yf >= 1) { yi++; yf--; } if (zf >= 1) { zi++; zf--; }
+    }
+    return r;
+  };
+  const ringBuf = new Float32Array(N);
+  const innerLUT = new Float32Array(64), outerLUT = new Float32Array(64);
+  const ringMask = (evo) => {
+    const st = state;
+    const ringScale = M.layoutW / 1400;
+    const radius = (st.maskRingRadius ?? 200) * ringScale;
+    const half = (st.maskRingThickness ?? 100) * ringScale / 2;
+    const inW = (st.maskInnerSoftness ?? 100) / 100 * half, outW = (st.maskOuterSoftness ?? 100) / 100 * half;
+    const innerN = (st.maskRingInnerNoise ?? 0) * ringScale, outerN = (st.maskRingOuterNoise ?? 0) * ringScale;
+    const noisy = innerN > 0 || outerN > 0;
+    if (noisy) {
+      const ns = st.maskRingNoiseScale ?? 0.5, so = (st.maskNoiseSeed ?? 0) * 7.31;
+      for (let b = 0; b < 64; b++) {
+        const ang = b * (2 * Math.PI / 64) - Math.PI, nx = Math.cos(ang) * ns, ny = Math.sin(ang) * ns;
+        innerLUT[b] = (noise3(nx + 50 + so, ny + 50 + so, evo) - 0.5) * 2;
+        outerLUT[b] = (noise3(nx + 150 + so, ny + 150 + so, evo + 17.3) - 0.5) * 2;
+      }
+    }
+    const cx = W / 2, cy = H / 2;
+    for (let i = 0; i < N; i++) {
+      const dx = homeX[i] - cx, dy = homeY[i] - cy, dist = Math.sqrt(dx * dx + dy * dy);
+      let ie = radius - half, oe = radius + half;
+      if (noisy && dist > 0.001) {
+        const b = Math.round((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI) * 64) % 64;
+        ie += innerLUT[b] * innerN; oe += outerLUT[b] * outerN;
+      }
+      const is = ie - inW * 0.7, iend = ie + inW * 0.3, os = oe - outW * 0.3, oend = oe + outW * 0.7;
+      let v = 0;
+      if (dist >= iend && dist <= os) v = 1;
+      else if (dist >= is && dist < iend && inW > 0) { const t = (dist - is) / inW; v = t * t * (3 - 2 * t); }
+      else if (dist > os && dist <= oend && outW > 0) { const t = (oend - dist) / outW; v = t * t * (3 - 2 * t); }
+      ringBuf[i] = v;
+    }
+    return ringBuf;
+  };
 
   // ── State + motion timeline ──
   const state = Object.assign({}, D.state);
@@ -346,7 +411,6 @@
     if (e.code !== 'Space') return;
     e.preventDefault();
     paused = !paused;
-    if (M.media.kind === 'video') { if (paused) media.pause(); else media.play().catch(() => {}); }
     Object.values(modes).forEach(m => m.setPaused(paused));
     rippleManager.setPaused(paused);
     if (paused) cursorTracker.freeze(); else cursorTracker.unfreeze();
@@ -356,7 +420,7 @@
   const bg = D.state.backgroundColor || '#FFFEF7';
   const bgR = parseInt(bg.slice(1, 3), 16) / 255, bgG = parseInt(bg.slice(3, 5), 16) / 255, bgB = parseInt(bg.slice(5, 7), 16) / 255;
   const pushScale = M.layoutW / W;
-  let last = performance.now(), lastMediaTime = -1;
+  let last = performance.now(), texTime = 0, evoPhase = 0;
   applyMotion();
   setMode(state.effectMode === 'attractor' ? 'attractor' : 'ripple');
 
@@ -378,12 +442,21 @@
       if (inside({ x: mouseX, y: mouseY }) && !cursorTracker.isActive) cursorTracker.setActive(true);
       if (rippleManager.hasActiveRipples()) rippleManager.update(state.rippleSpeed || 300);
       updatePhysics(dt);
+      texTime += dt;
+      evoPhase += dt * Math.max(0, Math.min(1, parseFloat(state.maskNoiseEvolutionSpeed) || 0));
     }
 
-    if (M.media.kind === 'video' && media.readyState >= 2 && media.currentTime !== lastMediaTime) {
-      uploadMedia();
-      lastMediaTime = media.currentTime;
+    // Texture model time: keyframe k is centred at (k + 0.5) / K of the loop.
+    if (TX.K > 1) {
+      let kp = (texTime % M.duration) / M.duration * TX.K - 0.5;
+      kp = ((kp % TX.K) + TX.K) % TX.K;
+      gl.uniform4f(uloc('u_kf'), TX.K, kp, TX.gh, TX.amp);
+    } else {
+      gl.uniform4f(uloc('u_kf'), 1, 0, TX.gh, TX.amp);
     }
+    gl.uniform1f(uloc('u_time'), texTime);
+    const mask = M.maskMode === 'tabloop' ? ringMask(evoPhase) : null;
+    const mScale = M.maskMax / 255;
 
     // Motion-driven uniforms (may be keyframed)
     const sMin = sm('scaleMin', 100) / 100;
@@ -400,16 +473,19 @@
       const gridV = rows > 1 ? r / (rows - 1) : 0.5;
       for (let c = 0; c < cols; c++) {
         const i = r * cols + c;
+        if (!valid[i]) continue;
+        const m = mask ? mask[i] : staticMask ? staticMask[i] * mScale : 1;
+        if (m <= 0) continue;
         const p = push[i];
         const px = p ? p.x : 0, py = p ? p.y : 0;
         const influence = Math.min(1, Math.sqrt(px * px + py * py) / 50);
-        let s = sMin + (sMax - sMin) * influence;
+        const s = (sMin + (sMax - sMin) * influence) * m;
         if (s < 0.001) continue;
         const off = count * INST;
         inst[off] = homeX[i] + px * pushScale;
         inst[off + 1] = homeY[i] + py * pushScale;
         inst[off + 2] = M.hasTexture ? (c + 0.5) / cols : -1;
-        inst[off + 3] = M.hasTexture ? (r + 0.5) / rows * 0.5 : -1;
+        inst[off + 3] = M.hasTexture ? (r + 0.5) / rows : -1;
         inst[off + 4] = cols > 1 ? c / (cols - 1) : 0.5;
         inst[off + 5] = gridV;
         inst[off + 6] = 1;

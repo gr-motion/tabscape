@@ -1069,7 +1069,6 @@ class ParameterPanel extends ParameterPanelBase {
       const fpsMap = {
         'png-sequence': [24, 30, 60, 120],
         'mp4': [24, 30, 60, 120],
-        'html': [10, 15, 24, 30],
       };
       const sourceFps = (typeof imageSampler !== 'undefined' && imageSampler && imageSampler.videoFramerate)
         ? Math.round(imageSampler.videoFramerate) : 30;
@@ -1080,16 +1079,12 @@ class ParameterPanel extends ParameterPanelBase {
         fpsSelect.style.display = '';
         fpsSelect.innerHTML = '';
         // Include the source video's native fps if not already in the list
-        // HTML bakes texture colours per frame: lower rate keeps the file small
-        // (the runtime blends between baked frames, so 15 fps still looks smooth).
-        const isHtml = format === 'html';
-        const merged = isHtml ? fpsList : Array.from(new Set([...fpsList, sourceFps])).sort((a, b) => a - b);
-        const defaultFps = isHtml ? 30 : sourceFps;
+        const merged = Array.from(new Set([...fpsList, sourceFps])).sort((a, b) => a - b);
         for (const fps of merged) {
           const opt = document.createElement('option');
           opt.value = fps;
-          opt.textContent = fps + ' fps' + (!isHtml && fps === sourceFps ? ' (source)' : '');
-          if (fps === defaultFps) opt.selected = true;
+          opt.textContent = fps + ' fps' + (fps === sourceFps ? ' (source)' : '');
+          if (fps === sourceFps) opt.selected = true;
           fpsSelect.appendChild(opt);
         }
       }
@@ -1386,8 +1381,6 @@ class ParameterPanel extends ParameterPanelBase {
     }
     if (this._videoExporter) return; // an export is already running
 
-    const fpsSelect = document.getElementById('exportFramerate');
-    const framerate = parseInt(fpsSelect ? fpsSelect.value : '') || 30;
     const resSelect = document.getElementById('exportResolution');
     const targetKB = parseInt(resSelect ? resSelect.value : '') || 150;
     const progressEl = document.getElementById('videoExportProgress');
@@ -1407,7 +1400,7 @@ class ParameterPanel extends ParameterPanelBase {
     };
 
     try {
-      const html = await exporter.export({ framerate, targetBytes: targetKB * 1024 });
+      const html = await exporter.export({ targetBytes: targetKB * 1024 });
       const blob = new Blob([html], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
