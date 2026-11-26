@@ -121,6 +121,7 @@ class SettingsLibrary {
     overlay.setAttribute('aria-modal', 'true');
     overlay.setAttribute('aria-label', 'Saved settings');
     const card = el('div', 'settings-lib__card');
+    card.dataset.squircle = '20'; // same squircle corners as the side panels
 
     // Header
     const header = el('div', 'settings-lib__header');
@@ -301,12 +302,39 @@ class SettingsLibrary {
     };
     const dl = icon('<path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/>', 'Download');
     dl.addEventListener('click', () => this._download(entry));
+    // Two-step delete: first click expands the bin into a red "Sure?" pill,
+    // second click deletes. Moving away or waiting resets it.
     const del = icon('<path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 13h10l1-13"/><path d="M9 7V4h6v3"/>', 'Delete');
+    del.classList.add('settings-lib__delete');
+    del.appendChild(el('span', 'settings-lib__delete-label', 'Sure?'));
+    let resetTimer = null;
+    const disarm = () => {
+      clearTimeout(resetTimer);
+      del.classList.remove('is-confirm');
+      del.setAttribute('aria-label', 'Delete');
+      del.title = 'Delete';
+    };
     del.addEventListener('click', async () => {
-      if (!confirm('Delete “' + entry.name + '”? This cannot be undone.')) return;
+      if (!del.classList.contains('is-confirm')) {
+        del.classList.add('is-confirm');
+        del.setAttribute('aria-label', 'Confirm delete');
+        del.title = 'Click again to delete';
+        clearTimeout(resetTimer);
+        resetTimer = setTimeout(disarm, 3000);
+        return;
+      }
+      disarm();
+      row.classList.add('is-removing');
       try { await this.remove(entry.id); } catch (err) { console.error('Delete failed:', err); }
       rerender();
     });
+    del.addEventListener('mouseleave', () => {
+      if (del.classList.contains('is-confirm')) { clearTimeout(resetTimer); resetTimer = setTimeout(disarm, 1200); }
+    });
+    del.addEventListener('mouseenter', () => {
+      if (del.classList.contains('is-confirm')) { clearTimeout(resetTimer); resetTimer = setTimeout(disarm, 3000); }
+    });
+    del.addEventListener('blur', disarm);
     actions.append(loadBtn, dl, del);
 
     row.append(thumb, info, actions);
