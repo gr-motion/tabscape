@@ -581,7 +581,7 @@ class WebGLGridRenderer extends GridRenderer {
       const texPosX = 50 - (state.texturePositionX ?? 0);
       const texPosY = 50 - (state.texturePositionY ?? 0);
       const texScale = state.textureScale ?? 100;
-      imageSampler.setTransform(texPosX, texPosY, texScale, texScale, 0);
+      imageSampler.setTransform(texPosX, texPosY, texScale, texScale, state.textureRotation ?? 0);
       imageSampler.setGridViewport(samplerOffsetX, samplerOffsetY, totalWidth, totalHeight, layoutW, layoutH);
       if (overrideSourceTexture) {
         // Export path: upload current pixel buffer to the export texture
@@ -741,16 +741,18 @@ class WebGLGridRenderer extends GridRenderer {
         const maskPosX = syncMask ? (state.texturePositionX ?? 0) : (state.maskPositionX ?? 0);
         const maskPosY = syncMask ? (state.texturePositionY ?? 0) : (state.maskPositionY ?? 0);
         const maskScale = syncMask ? (state.textureScale ?? 100) : (state.maskScale ?? 100);
-        maskSampler.setTransform(50 - maskPosX, 50 - maskPosY, maskScale, maskScale, 0);
+        const maskRotation = syncMask ? (state.textureRotation ?? 0) : (state.maskRotation ?? 0);
+        maskSampler.setTransform(50 - maskPosX, 50 - maskPosY, maskScale, maskScale, maskRotation);
         maskSampler.setGridViewport(samplerOffsetX + cubeWidth / 2, samplerOffsetY + cubeHeight / 2, Math.max(1, totalWidth - cubeWidth), Math.max(1, totalHeight - cubeHeight), layoutW, layoutH);
-        maskValues = this._maskProcessor.computeCustomMask(cols, rows, this._posX, this._posY, cubeWidth, cubeHeight, layoutW, layoutH, maskSampler, state.maskChannel || 'luminance', state.maskInvert || false, (state.maskSoftness ?? 0) / 100);
-        // Unwarped values for the HTML export, which re-applies the noise warp live.
-        if (this._bakeCapture) this._bakeCapture.maskBase = Float32Array.from(maskValues.subarray(0, cols * rows));
-        // Noise + evolution: wobble the mask edges like the tab loop ring does.
-        if ((parseFloat(state.maskNoise) || 0) > 0) {
-          maskValues = this._maskProcessor.applyNoiseWarp(
-            maskValues, cols, rows, cellStepX, cellStepY, state, layoutW,
-            this._getMaskEvolutionPhase(state), (x, y, z) => this.p.noise(x, y, z));
+        maskValues = this._maskProcessor.computeCustomMask(cols, rows, this._posX, this._posY, cubeWidth, cubeHeight, layoutW, layoutH, maskSampler, state.maskChannel || 'luminance', state.maskInvert || false, (state.maskSoftness ?? 0) / 100, state, this._getMaskEvolutionPhase(state));
+        // HTML export: keep the unwarped mask + the sampler viewport; the
+        // runtime re-applies the same noise warp live.
+        if (this._bakeCapture) {
+          const warped = Float32Array.from(maskValues.subarray(0, cols * rows));
+          const base = this._maskProcessor.computeCustomMask(cols, rows, this._posX, this._posY, cubeWidth, cubeHeight, layoutW, layoutH, maskSampler, state.maskChannel || 'luminance', state.maskInvert || false, (state.maskSoftness ?? 0) / 100, null, 0);
+          this._bakeCapture.maskBase = Float32Array.from(base.subarray(0, cols * rows));
+          this._bakeCapture.maskViewport = { ou: maskSampler._viewportOffsetU, su: maskSampler._viewportScaleU, ov: maskSampler._viewportOffsetV, sv: maskSampler._viewportScaleV, w: layoutW, h: layoutH };
+          maskValues = warped;
         }
         if (!this._maskValLogDone) {
           const vals = maskValues;
@@ -767,6 +769,10 @@ class WebGLGridRenderer extends GridRenderer {
       }
     }
 
+    // Displacement map (offsets + scales tabs by map value)
+    const disp = this._computeDisplacement(state, cols, rows, this._posX, this._posY, cubeWidth, cubeHeight,
+      samplerOffsetX, samplerOffsetY, totalWidth, totalHeight, layoutW, layoutH);
+
     // UV transform params
     // Texture UV math is in the LAYOUT frame (live preview dims) — using the
     // padded canvas dims here would shift the image's effective aspect during
@@ -780,6 +786,10 @@ class WebGLGridRenderer extends GridRenderer {
     const texScaleVal = state.textureScale ?? 100;
     const posShiftU = texPosX / 100, posShiftV = texPosY / 100;
     const scaleInv = 100 / texScaleVal;
+    // Rotation is applied around the canvas centre in aspect-corrected space
+    // (same maths as ImageSampler._transformUV) so it doesn't shear.
+    const texRotRad = (state.textureRotation ?? 0) * Math.PI / 180;
+    const texRotCos = Math.cos(texRotRad), texRotSin = Math.sin(texRotRad);
     const imgAspect = (this._texWidth && this._texHeight) ? this._texWidth / this._texHeight : 1;
     const canvasAspect = layoutW / (layoutH || 1);
     const mappingMode = imageSampler ? (imageSampler.mappingMode || 'fit') : 'fit';
@@ -828,8 +838,14 @@ class WebGLGridRenderer extends GridRenderer {
         if (bake) {
           let bu = -1, bv = -1, bValid = true;
           if (texReady) {
-            let uv_u = (vpOU + gridU * vpSU - 0.5) * scaleInv + 0.5 + posShiftU;
-            let uv_v = (vpOV + gridV * vpSV - 0.5) * scaleInv + 0.5 + posShiftV;
+            let uv_u = vpOU + gridU * vpSU, uv_v = vpOV + gridV * vpSV;
+            if (texRotRad !== 0) {
+              const rx = (uv_u - 0.5) * canvasAspect, ry = uv_v - 0.5;
+              uv_u = (rx * texRotCos + ry * texRotSin) / canvasAspect + 0.5;
+              uv_v = -rx * texRotSin + ry * texRotCos + 0.5;
+            }
+            uv_u = (uv_u - 0.5) * scaleInv + 0.5 + posShiftU;
+            uv_v = (uv_v - 0.5) * scaleInv + 0.5 + posShiftV;
             if (mappingMode !== 'tile' && (uv_u < 0 || uv_u > 1 || uv_v < 0 || uv_v > 1)) bValid = false;
             if (bValid && mappingMode === 'fit') {
               if (fitMode === 1) {
@@ -860,6 +876,15 @@ class WebGLGridRenderer extends GridRenderer {
         const influence = Math.min(1, pushMag / 50);
         let imageScale = motionScaleMin + (motionScaleMax - motionScaleMin) * influence;
         if (maskValues) imageScale *= maskValues[index];
+        let dispX = 0, dispY = 0;
+        if (disp) {
+          const d = disp.values[index];
+          if (d) {
+            dispX = d * disp.dx;
+            dispY = d * disp.dy;
+            imageScale *= Math.max(0, 1 + d * disp.ds);
+          }
+        }
         // Note: Scale Dark/Light applied in vertex shader
         if (imageScale * manualScale < 0.001) continue;
 
@@ -869,7 +894,12 @@ class WebGLGridRenderer extends GridRenderer {
           let uv_u = vpOU + gridU * vpSU;
           let uv_v = vpOV + gridV * vpSV;
           {
-          // Scale around canvas center first, then apply position offset
+          // Rotate around canvas centre, then scale, then apply position offset
+          if (texRotRad !== 0) {
+            const rx = (uv_u - 0.5) * canvasAspect, ry = uv_v - 0.5;
+            uv_u = (rx * texRotCos + ry * texRotSin) / canvasAspect + 0.5;
+            uv_v = -rx * texRotSin + ry * texRotCos + 0.5;
+          }
           uv_u = (uv_u - 0.5) * scaleInv + 0.5 + posShiftU;
           uv_v = (uv_v - 0.5) * scaleInv + 0.5 + posShiftV;
 
@@ -896,8 +926,8 @@ class WebGLGridRenderer extends GridRenderer {
         }
 
         // Pack
-        const cx = this._posX[index] + halfCW + pushX;
-        const cy = this._posY[index] + halfCH + pushY;
+        const cx = this._posX[index] + halfCW + pushX + dispX;
+        const cy = this._posY[index] + halfCH + pushY + dispY;
         const off = count * INST_FLOATS;
         data[off]   = cx;
         data[off+1] = cy;

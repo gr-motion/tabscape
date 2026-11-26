@@ -129,6 +129,7 @@ class HTMLExporter {
       canvasW: p.width, canvasH: p.height,
       hasTexture: !!probe.texReady,
       duration, maskMode, maskMax, hasStaticMask: !!staticMask,
+      maskViewport: probe.maskViewport || null,
       tex: null, // filled by the texture model below
     };
     const data = {

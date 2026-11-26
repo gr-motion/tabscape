@@ -277,28 +277,37 @@
     return ringBuf;
   };
 
-  // Image masks: noise warp + evolution (mirrors MaskProcessor.applyNoiseWarp)
+  // Image masks: noise warp + evolution, same maths as
+  // MaskProcessor.computeCustomMask (domain warp in mask-sampler UV space),
+  // applied to the stored per-cell mask with bilinear lookup.
   const baseMask = new Float32Array(N), warpBuf = new Float32Array(N);
   if (staticMask) for (let i = 0; i < N; i++) baseMask[i] = staticMask[i] * M.maskMax / 255;
   const warpMask = (evo) => {
-    const amount = parseFloat(state.maskNoise) || 0;
-    if (amount <= 0) return baseMask;
-    const stepX = M.cubeWidth + M.spacingX, stepY = M.cubeHeight + M.spacingY;
-    const ringScale = M.layoutW / 1400, ampPx = amount * ringScale;
-    const freq = ((state.maskRingNoiseScale ?? 0.5) / 0.5) / (400 * ringScale);
-    const so = (state.maskNoiseSeed ?? 0) * 7.31;
+    const vp = M.maskViewport;
+    const amount = Math.max(0, Math.min(99, parseFloat(state.maskNoise) || 0)) / 99;
+    if (!vp || amount <= 0) return baseMask;
+    const nScale = Math.max(0.05, parseFloat(state.maskRingNoiseScale) || 0.5);
+    const seed = parseFloat(state.maskNoiseSeed) || 0;
+    const layoutScale = Math.min(vp.w, vp.h) / 1400;
+    const warpPx = (state.maskRingInnerNoise ?? (amount * 99)) * layoutScale * 2;
+    const wu = warpPx / vp.w * 0.9, wv = warpPx / vp.h * 0.9;
+    const so = seed * 7.31, fs = (1.2 + nScale * 1.8) / 0.7;
+    const cu = cols > 1 ? vp.su / (cols - 1) : 1, cv = rows > 1 ? vp.sv / (rows - 1) : 1;
     const at = (c, r) => (c < 0 || r < 0 || c >= cols || r >= rows) ? 0 : baseMask[r * cols + c];
-    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-      const px = c * stepX + (r % 2 === 1 ? stepX * 0.5 : 0), py = r * stepY;
-      const nx = px * freq, ny = py * freq;
-      const dx = (noise3(nx + 50 + so, ny + 50 + so, evo) - 0.5) * 2 * ampPx;
-      const dy = (noise3(nx + 150 + so, ny + 150 + so, evo + 17.3) - 0.5) * 2 * ampPx;
-      const rf = (py + dy) / stepY;
-      const cf = (px + dx) / stepX - (Math.round(rf) % 2 === 1 ? 0.5 : 0);
-      const c0 = Math.floor(cf), r0 = Math.floor(rf), tx = cf - c0, ty = rf - r0;
-      const a = at(c0, r0) + (at(c0 + 1, r0) - at(c0, r0)) * tx;
-      const b = at(c0, r0 + 1) + (at(c0 + 1, r0 + 1) - at(c0, r0 + 1)) * tx;
-      warpBuf[r * cols + c] = a + (b - a) * ty;
+    for (let r = 0; r < rows; r++) {
+      const gv = rows > 1 ? r / (rows - 1) : 0.5;
+      for (let c = 0; c < cols; c++) {
+        const gu = cols > 1 ? c / (cols - 1) : 0.5;
+        const su = vp.ou + gu * vp.su, sv = vp.ov + gv * vp.sv;
+        const bx = su * fs + so, by = sv * fs + so * 0.73;
+        const du = ((noise3(bx + 31.7, by + 11.3, evo) - 0.5) * 2 + (noise3(bx * 2.1 + 7.9, by * 2.1 + 19.7, evo + 9.1) - 0.5)) * wu;
+        const dv = ((noise3(bx + 73.1, by + 47.9, evo + 19.4) - 0.5) * 2 + (noise3(bx * 2.1 + 43.3, by * 2.1 + 5.1, evo + 27.6) - 0.5)) * wv;
+        const cf = c + du / cu, rf = r + dv / cv;
+        const c0 = Math.floor(cf), r0 = Math.floor(rf), tx = cf - c0, ty = rf - r0;
+        const t0 = at(c0, r0) + (at(c0 + 1, r0) - at(c0, r0)) * tx;
+        const t1 = at(c0, r0 + 1) + (at(c0 + 1, r0 + 1) - at(c0, r0 + 1)) * tx;
+        warpBuf[r * cols + c] = t0 + (t1 - t0) * ty;
+      }
     }
     return warpBuf;
   };

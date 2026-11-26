@@ -344,6 +344,8 @@ class ImageSampler {
   seek(time) {
     if (this.video) {
       this.video.time(time);
+      // Locked videos follow each other's seeks
+      if (typeof videoSync !== 'undefined' && videoSync) videoSync.onSeek(this, time);
       // When paused, the draw loop won't naturally pick up the new frame.
       // Listen for the browser's seeked event, then force a buffer refresh.
       const elt = this.video.elt;
@@ -435,9 +437,11 @@ class ImageSampler {
       const rad = this._rotation * Math.PI / 180;
       const cos = Math.cos(rad);
       const sin = Math.sin(rad);
-      const cx = u - 0.5;
+      // Rotate in aspect-corrected space so non-square canvases don't shear
+      const aspect = this._canvasAspect || 1;
+      const cx = (u - 0.5) * aspect;
       const cy = v - 0.5;
-      u = cx * cos + cy * sin + 0.5;
+      u = (cx * cos + cy * sin) / aspect + 0.5;
       v = -cx * sin + cy * cos + 0.5;
     }
 
@@ -503,6 +507,11 @@ class ImageSampler {
     const h = this._bufferHeight;
     let x, y;
 
+    // Outside the image there is nothing to sample (except tile, which wraps).
+    // Without this, _getPixelFromBuffer clamps to the edge pixels and smears
+    // the image's border rows/columns across the rest of the canvas.
+    if (this.mappingMode !== 'tile' && (u < 0 || u > 1 || v < 0 || v > 1)) return null;
+
     switch (this.mappingMode) {
       case 'stretch':
         x = u * (w - 1);
@@ -562,6 +571,21 @@ class ImageSampler {
   }
 
   /**
+   * For video sources, copy the current frame into the pixel buffer when the
+   * playhead has moved. Call once per render frame before sampling.
+   */
+  refreshVideoFrame() {
+    if (!this.isVideo) return;
+    const currentTime = this.getVideoTime();
+    const delta = Math.abs(currentTime - this._lastFrameTime);
+    if (delta > 0.016 || !this._pixelBuffer) {
+      this.updateVideoBuffer();
+      this._cacheValid = false;
+      this._lastFrameTime = currentTime;
+    }
+  }
+
+  /**
    * Pre-cache colors for the entire grid (optimized batch sampling)
    */
   cacheGridColors(cols, rows, canvasWidth, canvasHeight) {
@@ -577,16 +601,7 @@ class ImageSampler {
     }
 
     // For video, update pixel buffer and invalidate cache each frame
-    if (this.isVideo) {
-      const currentTime = this.getVideoTime();
-      const delta = Math.abs(currentTime - this._lastFrameTime);
-      const needsUpdate = delta > 0.016 || !this._pixelBuffer;
-      if (needsUpdate) {
-        this.updateVideoBuffer();
-        this._cacheValid = false;
-        this._lastFrameTime = currentTime;
-      }
-    }
+    this.refreshVideoFrame();
 
     // Check if hueOffset changed (invalidate cache if so)
     const curHueOffset = (typeof stateManager !== 'undefined' ? stateManager.get('imageHueOffset') : 0) || 0;
@@ -1250,3 +1265,4 @@ class ImageSampler {
 let imageSampler = null;
 let scaleVideoSampler = null;
 let maskSampler = null;
+let displaceSampler = null;

@@ -115,12 +115,17 @@ class MaskProcessor {
 
   /**
    * Compute custom image mask.
-   * Samples the mask image at each grid cell position.
+   * Samples the mask image at each grid cell position, optionally warping the
+   * sample position with animated noise (Noise / Noise Evolution Speed).
    * Returns Float32Array of mask values (0-1) per cell.
    */
-  computeCustomMask(cols, rows, posX, posY, cubeW, cubeH, canvasW, canvasH, sampler, channel, invert, softness = 0) {
+  computeCustomMask(cols, rows, posX, posY, cubeW, cubeH, canvasW, canvasH, sampler, channel, invert, softness = 0, state = null, noiseEvolution = 0) {
     const gridSize = cols * rows;
     this._ensureSize(gridSize);
+
+    // Video masks: pull the current frame (sampleAt reads the pixel buffer
+    // directly, so nothing else refreshes it during playback).
+    if (sampler.refreshVideoFrame) sampler.refreshVideoFrame();
 
     // GPU-accelerated source blur for spatial softness (browser canvas filter
     // is GPU-backed). Mirrors how tabloop's softness feathers the mask edge,
@@ -140,47 +145,54 @@ class MaskProcessor {
       }
     }
 
-    // Cache grid colors in the mask sampler
-    sampler.cacheGridColors(cols, rows, canvasW, canvasH);
+    // Keep the sampler's aspect-ratio reference in sync with the layout
+    if (canvasW && canvasH) sampler._canvasAspect = canvasW / canvasH;
 
-    // Debug: log pixel buffer state
-    if (!this._maskCacheLogDone) {
-      const buf = sampler._pixelBuffer;
-      let nonZero = 0;
-      if (buf) {
-        for (let i = 0; i < Math.min(buf.length, 1000); i++) {
-          if (buf[i] !== 0) nonZero++;
-        }
-      }
-      const cache = sampler._colorCache;
-      const firstSample = cache && cache[0] ? cache[0] : null;
-      console.log('[MaskProcessor Debug]', {
-        cacheLength: cache ? cache.length : 0,
-        firstSample,
-        pixelBufLength: buf ? buf.length : 0,
-        pixelBufNonZero: nonZero,
-        samplerMappingMode: sampler.mappingMode,
-        viewportOU: sampler._viewportOffsetU,
-        viewportOV: sampler._viewportOffsetV,
-        viewportSU: sampler._viewportScaleU,
-        viewportSV: sampler._viewportScaleV,
-      });
-      this._maskCacheLogDone = true;
-      setTimeout(() => { this._maskCacheLogDone = false; }, 3000);
-    }
+    // Noise warps the sample position (domain warp), so the mask edge wobbles
+    const customNoiseAmount = Math.max(0, Math.min(99, parseFloat(state && state.maskNoise) || 0)) / 99;
+    const customNoiseScale = Math.max(0.05, parseFloat(state && state.maskRingNoiseScale) || 0.5);
+    const customNoiseSeed = parseFloat(state && state.maskNoiseSeed) || 0;
+    const layoutScale = Math.min(canvasW, canvasH) / 1400;
+    const warpPx = ((state && state.maskRingInnerNoise) ?? (customNoiseAmount * 99)) * layoutScale * 2;
+    const warpUScale = canvasW > 0 ? warpPx / canvasW : 0;
+    const warpVScale = canvasH > 0 ? warpPx / canvasH : 0;
 
-    for (let i = 0; i < gridSize; i++) {
-      const sample = sampler.getCachedColor(i);
-      let value = 0;
-      if (sample) {
-        if (channel === 'alpha' && sample.a !== undefined) {
-          value = sample.a / 255;
-        } else {
-          value = (0.299 * sample.r + 0.587 * sample.g + 0.114 * sample.b) / 255;
+    for (let row = 0; row < rows; row++) {
+      const gridV = rows > 1 ? row / (rows - 1) : 0.5;
+      for (let col = 0; col < cols; col++) {
+        const i = row * cols + col;
+        const gridU = cols > 1 ? col / (cols - 1) : 0.5;
+        let sampleU = sampler._viewportOffsetU + gridU * sampler._viewportScaleU;
+        let sampleV = sampler._viewportOffsetV + gridV * sampler._viewportScaleV;
+        if (warpUScale > 0 || warpVScale > 0) {
+          const seedOff = customNoiseSeed * 7.31;
+          const fieldScale = (1.2 + customNoiseScale * 1.8) / 0.7;
+          const baseX = sampleU * fieldScale + seedOff;
+          const baseY = sampleV * fieldScale + seedOff * 0.73;
+          const warpU =
+            ((this.p.noise(baseX + 31.7, baseY + 11.3, noiseEvolution) - 0.5) * 2 +
+             (this.p.noise(baseX * 2.1 + 7.9, baseY * 2.1 + 19.7, noiseEvolution + 9.1) - 0.5)) *
+            (warpUScale * 0.9);
+          const warpV =
+            ((this.p.noise(baseX + 73.1, baseY + 47.9, noiseEvolution + 19.4) - 0.5) * 2 +
+             (this.p.noise(baseX * 2.1 + 43.3, baseY * 2.1 + 5.1, noiseEvolution + 27.6) - 0.5)) *
+            (warpVScale * 0.9);
+          sampleU += warpU;
+          sampleV += warpV;
         }
+
+        const sample = sampler.sampleAt(sampleU, sampleV);
+        let value = 0;
+        if (sample) {
+          if (channel === 'alpha' && sample.a !== undefined) {
+            value = sample.a / 255;
+          } else {
+            value = (0.299 * sample.r + 0.587 * sample.g + 0.114 * sample.b) / 255;
+          }
+        }
+        if (invert) value = 1 - value;
+        this._maskValues[i] = value;
       }
-      if (invert) value = 1 - value;
-      this._maskValues[i] = value;
     }
 
     // Restore the unblurred pixel buffer so other consumers (e.g. live image
@@ -191,42 +203,6 @@ class MaskProcessor {
     }
 
     return this._maskValues;
-  }
-
-  /**
-   * Noise warp for image masks (custom / library): every cell samples the
-   * unwarped per-cell mask at a position displaced by two Perlin fields, so
-   * the shape's edges wobble the way the tab loop ring's do. Uses the same
-   * Noise / Noise Evolution Speed / Noise Seed settings. Mirrored 1:1 by the
-   * HTML export runtime (js/export/htmlRuntime.js).
-   */
-  applyNoiseWarp(values, cols, rows, stepX, stepY, state, layoutW, evolution, noise) {
-    const amount = parseFloat(state.maskNoise) || 0;
-    const gridSize = cols * rows;
-    if (amount <= 0 || !values) return values;
-    if (!this._warpValues || this._warpValues.length !== gridSize) this._warpValues = new Float32Array(gridSize);
-    const out = this._warpValues;
-    const ringScale = (layoutW > 0 ? layoutW : 1400) / 1400;
-    const ampPx = amount * ringScale;
-    const freq = ((state.maskRingNoiseScale ?? 0.5) / 0.5) / (400 * ringScale);
-    const so = (state.maskNoiseSeed ?? 0) * 7.31;
-    const at = (c, r) => (c < 0 || r < 0 || c >= cols || r >= rows) ? 0 : values[r * cols + c];
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const px = c * stepX + (r % 2 === 1 ? stepX * 0.5 : 0);
-        const py = r * stepY;
-        const nx = px * freq, ny = py * freq;
-        const dx = (noise(nx + 50 + so, ny + 50 + so, evolution) - 0.5) * 2 * ampPx;
-        const dy = (noise(nx + 150 + so, ny + 150 + so, evolution + 17.3) - 0.5) * 2 * ampPx;
-        const rf = (py + dy) / stepY;
-        const cf = (px + dx) / stepX - (Math.round(rf) % 2 === 1 ? 0.5 : 0);
-        const c0 = Math.floor(cf), r0 = Math.floor(rf), tx = cf - c0, ty = rf - r0;
-        const a = at(c0, r0) + (at(c0 + 1, r0) - at(c0, r0)) * tx;
-        const b = at(c0, r0 + 1) + (at(c0 + 1, r0 + 1) - at(c0, r0 + 1)) * tx;
-        out[r * cols + c] = a + (b - a) * ty;
-      }
-    }
-    return out;
   }
 
   /**

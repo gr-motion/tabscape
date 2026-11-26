@@ -144,6 +144,18 @@ const PARAMETER_CONFIG = [
     defaultLocked: true
   },
   {
+    id: 'maskRotation',
+    label: 'Rotate',
+    description: 'Rotation of the custom mask in degrees',
+    group: 'Mask',
+    type: 'slider',
+    min: -180,
+    max: 180,
+    step: 1,
+    defaultValue: 0,
+    hidden: true
+  },
+  {
     id: 'maskChannel',
     label: 'Mask Channel',
     description: 'Which channel to read from the mask image',
@@ -441,6 +453,17 @@ const PARAMETER_CONFIG = [
     defaultLocked: true
   },
   {
+    id: 'textureRotation',
+    label: 'Rotate',
+    description: 'Rotation of the texture in degrees',
+    group: 'Texture',
+    type: 'slider',
+    min: -180,
+    max: 180,
+    step: 1,
+    defaultValue: 0
+  },
+  {
     id: 'imageSaturationToScale',
     label: 'Saturation \u2192 Scale',
     group: 'Texture',
@@ -469,6 +492,171 @@ const PARAMETER_CONFIG = [
     step: 1,
     defaultValue: 100,
     hidden: true
+  },
+
+  // ── Displacement ──
+  // A reference image/video whose luma (or alpha) offsets and scales the tabs.
+  // Black / transparent = no change, white / opaque = full amount.
+  {
+    id: 'displaceImage',
+    label: 'Displacement Map',
+    description: 'Upload, drop or paste an image or video. Bright (or opaque) areas move and scale the tabs',
+    group: 'Displacement',
+    type: 'image',
+    targetSampler: 'displaceSampler',
+    enableStateKey: 'displaceImageLoaded',
+    dropZone: true,
+    dropZoneText: 'Drop displacement map here',
+    defaultValue: null
+  },
+  {
+    id: 'displaceAmountX',
+    label: 'Disp. Position X',
+    description: 'Horizontal tab offset at full map value (px at 1400px width)',
+    group: 'Displacement',
+    type: 'slider',
+    min: -200,
+    max: 200,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displaceAmountY',
+    label: 'Disp. Position Y',
+    description: 'Vertical tab offset at full map value (px at 1400px width)',
+    group: 'Displacement',
+    type: 'slider',
+    min: -200,
+    max: 200,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displaceAmountScale',
+    label: 'Disp. Scale',
+    description: 'Tab scale change at full map value (%). Negative shrinks, positive grows',
+    group: 'Displacement',
+    type: 'slider',
+    min: -100,
+    max: 200,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displaceSmooth',
+    label: 'Smooth Reaction',
+    description: 'Tabs react when the map crosses the threshold: ease to the full amount, then ease back (3x slower) even if the map stays. Re-triggers after the map drops 20% below the triggering value',
+    group: 'Displacement',
+    type: 'toggle',
+    defaultValue: false
+  },
+  {
+    id: 'displaceReactionTime',
+    label: 'Reaction Time',
+    description: 'Time to reach the full amount (s). Returning to rest takes 3x longer',
+    group: 'Displacement',
+    type: 'slider',
+    min: 0.05,
+    max: 3,
+    step: 0.05,
+    defaultValue: 0.5
+  },
+  {
+    id: 'displaceReactionRadius',
+    label: 'Radius',
+    description: 'Tabs within this distance (px at 1400px width) of a reacting tab react too, weaker with distance. 0 = only the triggering tab',
+    group: 'Displacement',
+    type: 'slider',
+    min: 0,
+    max: 300,
+    step: 1,
+    defaultValue: 100
+  },
+  {
+    id: 'displaceReactionSpread',
+    label: 'Spread',
+    description: 'Share of the radius used as a soft falloff (%). 0 = full strength up to a hard edge, 100 = fades from the centre',
+    group: 'Displacement',
+    type: 'slider',
+    min: 0,
+    max: 100,
+    step: 1,
+    defaultValue: 100
+  },
+  {
+    id: 'displaceThreshold',
+    label: 'Threshold',
+    description: 'Map value (%) that triggers the reaction',
+    group: 'Displacement',
+    type: 'slider',
+    min: 1,
+    max: 100,
+    step: 1,
+    defaultValue: 50
+  },
+  {
+    id: 'displaceChannel',
+    label: 'Map Channel',
+    description: 'Which channel of the map drives the displacement',
+    group: 'Displacement',
+    type: 'select',
+    options: [
+      { value: 'luminance', label: 'Luminance' },
+      { value: 'alpha', label: 'Alpha' }
+    ],
+    defaultValue: 'luminance'
+  },
+  {
+    id: 'displaceInvert',
+    label: 'Invert Map',
+    description: 'Flip the map values',
+    group: 'Displacement',
+    type: 'toggle',
+    defaultValue: false
+  },
+  {
+    id: 'displaceSoftness',
+    label: 'Softness',
+    description: 'Blur applied to the map before sampling',
+    group: 'Displacement',
+    type: 'slider',
+    min: 0,
+    max: 100,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displacePositionX',
+    label: 'Position X',
+    description: 'Horizontal offset of the displacement map',
+    group: 'Displacement',
+    type: 'slider',
+    min: -100,
+    max: 100,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displacePositionY',
+    label: 'Position Y',
+    description: 'Vertical offset of the displacement map',
+    group: 'Displacement',
+    type: 'slider',
+    min: -100,
+    max: 100,
+    step: 1,
+    defaultValue: 0
+  },
+  {
+    id: 'displaceScale',
+    label: 'Scale',
+    description: 'Zoom level of the displacement map (aspect ratio locked)',
+    group: 'Displacement',
+    type: 'slider',
+    min: 10,
+    max: 400,
+    step: 1,
+    defaultValue: 100
   },
 
   // ── Fade to Color (hidden – controlled by fadeToGrey toggle) ──

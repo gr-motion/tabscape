@@ -12,6 +12,20 @@ class ImageUploadParameter extends Parameter {
     this.targetSampler = config.targetSampler || 'imageSampler';
     // State key to enable when media is loaded
     this.enableStateKey = config.enableStateKey || 'imageSamplerEnabled';
+    this._preview = null;
+    this._previewImg = null;
+    this._previewVideo = null;
+    this._videoControls = null;
+    this._playBtn = null;
+    this._fileInput = null;
+  }
+
+  /** stateManager key of this player's video sync lock (null = no lock). */
+  _getVideoSyncKey() {
+    if (this.targetSampler === 'maskSampler') return 'videoLockMask';
+    if (this.targetSampler === 'displaceSampler') return 'videoLockDisplace';
+    if (this.targetSampler === 'scaleVideoSampler') return null;
+    return 'videoLockTexture';
   }
 
   _getSampler() {
@@ -21,6 +35,9 @@ class ImageUploadParameter extends Parameter {
     }
     if (this.targetSampler === 'maskSampler') {
       return typeof maskSampler !== 'undefined' ? maskSampler : null;
+    }
+    if (this.targetSampler === 'displaceSampler') {
+      return typeof displaceSampler !== 'undefined' ? displaceSampler : null;
     }
     return typeof imageSampler !== 'undefined' ? imageSampler : null;
   }
@@ -154,6 +171,24 @@ class ImageUploadParameter extends Parameter {
     videoControls.appendChild(progressWrap);
     videoControls.appendChild(timeLabel);
 
+    // Sync lock: locked videos (texture / mask / displacement) share speed,
+    // start time, play/pause and seeking, looping at the shortest one's end.
+    const syncKey = this._getVideoSyncKey();
+    if (syncKey && typeof stateManager !== 'undefined') {
+      const syncLock = document.createElement('span');
+      syncLock.className = 'parameter__lock parameter__lock--sync';
+      syncLock.innerHTML = '<svg width="8" height="10" viewBox="0 0 8 10" fill="none"><rect x="0.5" y="4.5" width="7" height="5" rx="1" stroke="currentColor"/><path d="M2 4.5V3a2 2 0 1 1 4 0v1.5" stroke="currentColor" fill="none"/></svg>';
+      syncLock.title = 'Sync: play locked videos together (same speed and start, loop at the shortest)';
+      const renderLock = (locked) => syncLock.classList.toggle('parameter__lock--active', !!locked);
+      renderLock(stateManager.get(syncKey));
+      stateManager.subscribe(syncKey, renderLock);
+      syncLock.addEventListener('click', (e) => {
+        e.preventDefault();
+        stateManager.set(syncKey, !stateManager.get(syncKey));
+      });
+      videoControls.appendChild(syncLock);
+    }
+
     const writeTime = (secs) => {
       if (document.activeElement !== timeLabel) {
         timeLabel.value = secs.toFixed(1) + 's';
@@ -215,12 +250,16 @@ class ImageUploadParameter extends Parameter {
       if (sampler && sampler.hasVideo()) {
         const progress = sampler.getVideoProgress();
         progressBar.value = progress * 100;
+        // Mirror play state changed elsewhere (e.g. by a synced video)
+        if (sampler.isPlaying === previewVideo.paused) {
+          if (sampler.isPlaying) previewVideo.play().catch(() => {});
+          else previewVideo.pause();
+          playBtn.innerHTML = sampler.isPlaying ? '\u275a\u275a' : '\u25b6';
+        }
         if (previewVideo.duration) {
           const targetTime = progress * previewVideo.duration;
-          if (sampler.isPlaying) {
-            const drift = Math.abs(previewVideo.currentTime - targetTime);
-            if (drift > 0.5) previewVideo.currentTime = targetTime;
-          }
+          const drift = Math.abs(previewVideo.currentTime - targetTime);
+          if (drift > (sampler.isPlaying ? 0.5 : 0.05)) previewVideo.currentTime = targetTime;
           writeTime(targetTime);
         }
       }
@@ -232,6 +271,12 @@ class ImageUploadParameter extends Parameter {
     fileInput.className = 'parameter__file-input';
     fileInput.accept = this.accept;
     fileInput.style.display = 'none';
+    this._preview = preview;
+    this._previewImg = previewImg;
+    this._previewVideo = previewVideo;
+    this._videoControls = videoControls;
+    this._playBtn = playBtn;
+    this._fileInput = fileInput;
 
     container.appendChild(fileInput);
 
@@ -248,20 +293,16 @@ class ImageUploadParameter extends Parameter {
     // Clear button
     clearBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      preview.style.display = 'none';
-      videoControls.style.display = 'none';
-      if (this._browseBtn) this._browseBtn.style.display = '';
-      previewImg.src = '';
-      previewImg.style.display = 'none';
-      previewVideo.src = '';
-      previewVideo.style.display = 'none';
-      fileInput.value = '';
+      this._clearControlUI();
       this.setValue(null);
       const sampler = this._getSampler();
       if (sampler) {
         sampler.clearMedia();
       }
       stateManager.set(this.enableStateKey, false);
+      if (typeof app !== 'undefined' && app && app._clearPersistedParameterMedia) {
+        app._clearPersistedParameterMedia(this.id);
+      }
       // Disable video-only export formats
       if (typeof app !== 'undefined' && app.parameterPanel && app.parameterPanel._updateVideoExportOptions) {
         app.parameterPanel._updateVideoExportOptions();
@@ -331,7 +372,59 @@ class ImageUploadParameter extends Parameter {
     return container;
   }
 
-  _handleFile(file, previewImg, previewVideo, preview, uploadArea, videoControls, playBtn) {
+  _clearControlUI() {
+    if (this._preview) this._preview.style.display = 'none';
+    if (this._videoControls) this._videoControls.style.display = 'none';
+    if (this._browseBtn) this._browseBtn.style.display = '';
+    if (this._previewImg) {
+      this._previewImg.src = '';
+      this._previewImg.style.display = 'none';
+    }
+    if (this._previewVideo) {
+      this._previewVideo.pause();
+      this._previewVideo.src = '';
+      this._previewVideo.style.display = 'none';
+    }
+    if (this._playBtn) this._playBtn.innerHTML = '▶';
+    if (this._fileInput) this._fileInput.value = '';
+    if (this._dropZone) this._dropZone.style.display = '';
+  }
+
+  /** Re-load media saved in IndexedDB (see WorkspacePersistence). */
+  async restorePersistedMedia(entry, runtimeState = null) {
+    if (!entry || !entry.blob) return;
+    const file = entry.blob instanceof File
+      ? entry.blob
+      : new File([entry.blob], entry.name || `${this.id}`, {
+          type: entry.type || entry.blob.type || 'application/octet-stream',
+          lastModified: entry.lastModified || Date.now()
+        });
+    await this._handleFile(
+      file,
+      this._previewImg,
+      this._previewVideo,
+      this._preview,
+      null,
+      this._videoControls,
+      this._playBtn,
+      { persist: false, runtimeState }
+    );
+  }
+
+  /** Samplers are created inside the p5 sketch; wait for them when restoring on startup. */
+  _waitForSampler(timeoutMs = 8000) {
+    return new Promise((resolve) => {
+      const started = performance.now();
+      const check = () => {
+        const sampler = this._getSampler();
+        if (sampler || performance.now() - started > timeoutMs) resolve(sampler);
+        else setTimeout(check, 50);
+      };
+      check();
+    });
+  }
+
+  _handleFile(file, previewImg, previewVideo, preview, uploadArea, videoControls, playBtn, options = {}) {
     const url = URL.createObjectURL(file);
     const isVideo = file.type.startsWith('video/');
 
@@ -341,7 +434,7 @@ class ImageUploadParameter extends Parameter {
       previewVideo.src = url;
       previewVideo.play();
       videoControls.style.display = 'flex';
-      if (playBtn) playBtn.innerHTML = '\u275a\u275a';
+      if (playBtn) playBtn.innerHTML = '❚❚';
     } else {
       previewImg.style.display = 'block';
       previewVideo.style.display = 'none';
@@ -358,15 +451,27 @@ class ImageUploadParameter extends Parameter {
     }
 
     this.setValue(file);
+    if (typeof app !== 'undefined' && app && app._persistParameterMedia && options.persist !== false) {
+      app._persistParameterMedia(this.id, file);
+    }
 
     if (this.onMediaLoad) {
       this.onMediaLoad(file);
     }
 
+    // The mask sampler is shared by Custom and Library; when restoring a saved
+    // workspace only load it if Custom is the active mode (activate() loads it
+    // later on a mode switch).
+    if (options.persist === false && this.targetSampler === 'maskSampler' &&
+        stateManager.get('maskMode') !== 'custom') {
+      return Promise.resolve();
+    }
+
     // Load into the appropriate sampler
-    const sampler = this._getSampler();
-    if (sampler) {
-      sampler.loadMedia(file).then(() => {
+    return this._waitForSampler().then((sampler) => {
+      if (!sampler) return;
+      return sampler.loadMedia(file).then(() => {
+        stateManager.set(this.enableStateKey, true);
         if (sampler.isVideo) {
           sampler.play();
         }
@@ -381,8 +486,26 @@ class ImageUploadParameter extends Parameter {
         if (typeof app !== 'undefined' && app.fitCanvasToTexture && sampler === imageSampler) {
           app.fitCanvasToTexture();
         }
+        if (sampler.isVideo && options.runtimeState) {
+          const pct = Math.max(0, Math.min(1, parseFloat(options.runtimeState.progress) || 0));
+          const shouldPause = options.runtimeState.paused === true;
+          sampler.seekPercent(pct);
+          const duration = sampler.getVideoDuration ? sampler.getVideoDuration() : 0;
+          if (previewVideo && duration > 0) {
+            previewVideo.currentTime = pct * duration;
+          }
+          if (shouldPause) {
+            sampler.pause();
+            if (previewVideo) previewVideo.pause();
+            if (playBtn) playBtn.innerHTML = '▶';
+          } else {
+            sampler.play();
+            if (previewVideo) previewVideo.play().catch(() => {});
+            if (playBtn) playBtn.innerHTML = '❚❚';
+          }
+        }
       });
-    }
+    });
   }
 }
 
@@ -565,7 +688,7 @@ class MaskLibraryParameter extends Parameter {
       // Restore a mask by name when settings are loaded
       stateManager.subscribe(this.id, (name) => {
         if (typeof name === 'string' && name && (!this._item || this._item.file !== name)) {
-          this._selectByName(name);
+          this._selectByName(name, { restore: true });
         }
       });
     }
@@ -625,13 +748,13 @@ class MaskLibraryParameter extends Parameter {
     return [];
   }
 
-  async _selectByName(name) {
+  async _selectByName(name, options = {}) {
     const items = await this._loadItems();
     const item = items.find(i => i.file === name);
-    if (item) this._select(item);
+    if (item) this._select(item, options);
   }
 
-  async _select(item) {
+  async _select(item, options = {}) {
     let file;
     try {
       const res = await fetch(item.url);
@@ -642,10 +765,10 @@ class MaskLibraryParameter extends Parameter {
       console.warn('Failed to load mask from library:', item.file, err);
       return;
     }
-    this._applyFile(file, item);
+    this._applyFile(file, item, options);
   }
 
-  _applyFile(file, item) {
+  _applyFile(file, item, options = {}) {
     this._file = file;
     this._item = item;
     this.value = item.file;
@@ -654,17 +777,37 @@ class MaskLibraryParameter extends Parameter {
     if (this._chooseBtn) this._chooseBtn.style.display = 'none';
     stateManager.set(this.id, item.file);
 
-    // Library shapes are transparent SVGs — read the alpha channel
-    if (typeof app !== 'undefined' && app._setLinkedParameterValue) {
+    // Library shapes are transparent SVGs — read the alpha channel. Skipped
+    // when restoring a saved workspace so the saved channel setting wins.
+    if (!options.restore && typeof app !== 'undefined' && app._setLinkedParameterValue) {
       app._setLinkedParameterValue('maskChannel', 'alpha');
     }
 
-    const sampler = this._getSampler();
-    if (sampler) {
+    // Custom and Library share one sampler: only load while Library is the
+    // active mode; switching modes re-applies via activate().
+    if (stateManager.get('maskMode') !== 'library') return;
+    this._loadIntoSampler(file);
+  }
+
+  _loadIntoSampler(file) {
+    this._waitForSampler().then((sampler) => {
+      if (!sampler) return;
       sampler.loadMedia(file).then(() => {
         stateManager.set(this.enableStateKey, true);
       }).catch(err => console.warn('Failed to load library mask:', err));
-    }
+    });
+  }
+
+  _waitForSampler(timeoutMs = 8000) {
+    return new Promise((resolve) => {
+      const started = performance.now();
+      const check = () => {
+        const sampler = this._getSampler();
+        if (sampler || performance.now() - started > timeoutMs) resolve(sampler);
+        else setTimeout(check, 50);
+      };
+      check();
+    });
   }
 
   _clear() {
@@ -682,13 +825,12 @@ class MaskLibraryParameter extends Parameter {
 
   /** Re-apply this parameter's mask to the shared mask sampler. */
   activate() {
-    const sampler = this._getSampler();
-    if (!sampler) return;
     if (this._file) {
-      sampler.loadMedia(this._file);
-    } else {
-      sampler.clearMedia();
+      this._loadIntoSampler(this._file);
+      return;
     }
+    const sampler = this._getSampler();
+    if (sampler) sampler.clearMedia();
   }
 
   async _openModal() {
