@@ -152,7 +152,8 @@
     }
     makeTex(unit, (unit === 4 || unit === 7) ? gl.NEAREST : gl.LINEAR);
     if (!info) continue;
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, info.w, info.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(info.data));
+    if (info.float) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, info.w, info.h, 0, gl.RGBA, gl.FLOAT, new Float32Array(info.data));
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, info.w, info.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(info.data));
   }
   // Unit 0 = media atlas (colours + mask). Video atlas is 2x per cell, so
   // LINEAR at the cell centre averages that cell's 2x2 block.

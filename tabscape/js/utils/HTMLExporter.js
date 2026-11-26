@@ -117,19 +117,23 @@ class HTMLExporter {
     renderer.render();
     const uniforms = renderer.snapshotUniforms();
     const textures = {};
-    // Only the lookup gradients the fragment shader will actually read
-    // (curve LUT + duo-tone textures are never sampled). Stored as plain
-    // numbers: they gzip far better than base64.
+    // Only the lookup textures the fragment shader will actually read for
+    // these settings. Stored as plain numbers: they gzip far better than base64.
     const uv = (name) => (uniforms[name] ? uniforms[name].v : 0);
     const remap = uv('u_colorRemapEnabled') === 1, gradMap = uv('u_gradientMapEnabled') === 1;
+    const duo = uv('u_duotoneEnabled') === 1;
     const needed = {
-      1: remap && ((gradMap && uv('u_paletteMode') === 0) || (uv('u_intEnabled') === 1 && uv('u_intAmount') > 0)),
+      1: remap && ((gradMap && uv('u_paletteMode') === 0) || uv('u_intEnabled') === 1),
       2: remap && gradMap && uv('u_paletteMode') === 1,
       3: remap && uv('u_hgmEnabled') === 1,
+      4: remap && uv('u_gradeEnabled') === 1, // curve LUT (colour grade)
+      5: duo, 6: duo,
     };
     for (const [unit, t] of Object.entries(renderer.getHTMLExportTextures())) {
-      if (!needed[unit] || t.float) continue;
-      textures[unit] = { w: t.w, h: t.h, data: Array.from(t.data) };
+      if (!needed[unit]) continue;
+      textures[unit] = t.float
+        ? { w: t.w, h: t.h, float: true, data: Array.from(t.data, v => Math.round(v * 1e5) / 1e5) }
+        : { w: t.w, h: t.h, data: Array.from(t.data) };
     }
 
     // ── Mask: normalise, fold in cells that must never draw ──
