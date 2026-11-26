@@ -232,6 +232,7 @@ class WebGLGridRenderer extends GridRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, R, R, 0, gl.RED, gl.UNSIGNED_BYTE, data);
+    this._cornerSDFData = { w: R, h: R, data };
     return tex;
   }
 
@@ -396,6 +397,7 @@ class WebGLGridRenderer extends GridRenderer {
       gl.activeTexture(gl.TEXTURE0 + unit);
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+      this._recordTexData(unit, w, 1, data);
     };
     // Custom gradient
     const cStops = paletteProcessor._sortedStopsRGB;
@@ -438,6 +440,7 @@ class WebGLGridRenderer extends GridRenderer {
     gl.activeTexture(gl.TEXTURE0 + 4);
     gl.bindTexture(gl.TEXTURE_2D, this._curveLUTTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 256, 1, 0, gl.RGBA, gl.FLOAT, data);
+    this._recordTexData(4, 256, 1, data);
     this._curveLUTDirty = false;
   }
 
@@ -673,11 +676,15 @@ class WebGLGridRenderer extends GridRenderer {
       const dtC = paletteProcessor._duotoneCoolStopsRGB;
       if (dtW && dtW.length > 0) {
         gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, this._duotoneWarmTex);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, this._buildGradientData(dtW, 256));
+        const dtWData = this._buildGradientData(dtW, 256);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, dtWData);
+        this._recordTexData(5, 256, 1, dtWData);
       }
       if (dtC && dtC.length > 0) {
         gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, this._duotoneCoolTex);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, this._buildGradientData(dtC, 256));
+        const dtCData = this._buildGradientData(dtC, 256);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, dtCData);
+        this._recordTexData(6, 256, 1, dtCData);
       }
     }
 
@@ -790,12 +797,51 @@ class WebGLGridRenderer extends GridRenderer {
     const halfCW = cubeWidth / 2, halfCH = cubeHeight / 2;
     // Scale push offsets when rendering at a different resolution (e.g. video export)
     const pushScale = layoutW / this.p.width;
+    const bake = this._bakeCapture || null;
+    if (bake) {
+      bake.cols = cols; bake.rows = rows;
+      bake.uv = new Float32Array(gridSize * 2);
+      bake.valid = new Uint8Array(gridSize);
+      bake.mask = maskValues ? Float32Array.from(maskValues.subarray ? maskValues.subarray(0, gridSize) : maskValues.slice(0, gridSize)) : null;
+      bake.texReady = texReady;
+      bake.cubeWidth = cubeWidth; bake.cubeHeight = cubeHeight;
+      bake.offsetX = offsetX; bake.offsetY = offsetY;
+      bake.layoutW = layoutW; bake.layoutH = layoutH;
+    }
 
     for (let row = 0; row < rows; row++) {
       const gridV = rows > 1 ? row / (rows - 1) : 0.5;
       for (let col = 0; col < cols; col++) {
         const index = row * cols + col;
         const gridU = cols > 1 ? col / (cols - 1) : 0.5;
+
+        // HTML export bake: record every cell's texture UV (or -1 when the
+        // cell falls outside the texture) independent of motion/scale culling.
+        if (bake) {
+          let bu = -1, bv = -1, bValid = true;
+          if (texReady) {
+            let uv_u = (vpOU + gridU * vpSU - 0.5) * scaleInv + 0.5 + posShiftU;
+            let uv_v = (vpOV + gridV * vpSV - 0.5) * scaleInv + 0.5 + posShiftV;
+            if (mappingMode !== 'tile' && (uv_u < 0 || uv_u > 1 || uv_v < 0 || uv_v > 1)) bValid = false;
+            if (bValid && mappingMode === 'fit') {
+              if (fitMode === 1) {
+                if (uv_v < fitVOff || uv_v > 1 - fitVOff) bValid = false;
+                else uv_v = (uv_v - fitVOff) / fitVScale;
+              } else if (fitMode === 2) {
+                if (uv_u < fitUOff || uv_u > 1 - fitUOff) bValid = false;
+                else uv_u = (uv_u - fitUOff) / fitUScale;
+              }
+            } else if (mappingMode === 'tile') {
+              uv_u = ((uv_u % 1) + 1) % 1;
+              uv_v = ((uv_v % 1) + 1) % 1;
+            }
+            if (bValid) { bu = uv_u; bv = uv_v; }
+          }
+          bake.uv[index * 2] = bu;
+          bake.uv[index * 2 + 1] = bv;
+          bake.valid[index] = bValid ? 1 : 0;
+          continue;
+        }
 
         // Scale — influence uses raw push magnitude, position uses scaled
         const po = this._pushOffsets[index];
@@ -856,6 +902,8 @@ class WebGLGridRenderer extends GridRenderer {
         count++;
       }
     }
+    if (bake) return;
+
     // Cache geometry for SVG export — exportSVG samples the just-rendered
     // framebuffer at each cube center, so it needs the same instance data.
     this._lastInstanceCount = count;
@@ -1206,6 +1254,139 @@ class WebGLGridRenderer extends GridRenderer {
     this.resize(prevW, prevH);
 
     return finalPixels;
+  }
+
+  // ── HTML export support ──────────────────────────────────
+
+  _recordTexData(unit, w, h, data) {
+    if (!this._texDataByUnit) this._texDataByUnit = {};
+    this._texDataByUnit[unit] = { w, h, data: data.slice ? data.slice() : data, float: data instanceof Float32Array };
+  }
+
+  /**
+   * Bake one frame of per-cell data for the HTML export: the raw source
+   * texel each cell samples (RGBA, cols x rows) and its mask value. Uses the
+   * exact UV math of the live instance build and samples the GPU texture
+   * with the same NEAREST filter, so colours match the live shader 1:1.
+   * Assumes the image sampler already holds the frame to bake.
+   */
+  bakeHTMLFrame() {
+    if (!this._webglAvailable) return null;
+    const gl = this._gl;
+    const p = this.p;
+    const cw = p.width, ch = p.height;
+    this._ensureExportTexture(gl);
+    const stubCanvas = (this._exportStubCanvas ||= document.createElement('canvas'));
+    const stubTarget = { canvas: stubCanvas, elt: stubCanvas, drawingContext: stubCanvas.getContext('2d'), pixelDensity: () => 1 };
+    const bake = {};
+    this._bakeCapture = bake;
+    try {
+      this._renderCore(stubTarget, cw, ch, this._exportTexture);
+    } finally {
+      this._bakeCapture = null;
+    }
+    if (!bake.cols) return null;
+    const cols = bake.cols, rows = bake.rows, n = cols * rows;
+    const rgba = new Uint8Array(n * 4);
+    if (bake.texReady) this._sampleCellsGPU(bake, rgba);
+    bake.rgba = rgba;
+    return bake;
+  }
+
+  _sampleCellsGPU(bake, out) {
+    const gl = this._gl;
+    const cols = bake.cols, rows = bake.rows, n = cols * rows;
+    if (!this._bakeProgram) {
+      const vs = `#version 300 es
+in vec2 a_uv; in vec2 a_cell;
+uniform vec2 u_grid;
+out vec2 v_uv;
+void main(){ v_uv=a_uv; gl_PointSize=1.0; gl_Position=vec4((a_cell+0.5)/u_grid*2.0-1.0,0.0,1.0); }`;
+      const fs = `#version 300 es
+precision highp float;
+in vec2 v_uv; uniform sampler2D u_src; out vec4 o;
+void main(){ o = v_uv.x < 0.0 ? vec4(0.0) : texture(u_src, v_uv); }`;
+      this._bakeProgram = this._createProgram(gl, vs, fs);
+      this._bakeVAO = gl.createVertexArray();
+      this._bakeVBO = gl.createBuffer();
+      this._bakeFBO = gl.createFramebuffer();
+      this._bakeTex = gl.createTexture();
+    }
+    const prog = this._bakeProgram;
+    const verts = new Float32Array(n * 4);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const i = r * cols + c, o = i * 4;
+      verts[o] = bake.valid[i] ? bake.uv[i * 2] : -1;
+      verts[o + 1] = bake.uv[i * 2 + 1];
+      verts[o + 2] = c; verts[o + 3] = r;
+    }
+    gl.bindTexture(gl.TEXTURE_2D, this._bakeTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, cols, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this._bakeFBO);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._bakeTex, 0);
+    gl.viewport(0, 0, cols, rows);
+    gl.disable(gl.BLEND);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(prog);
+    gl.bindVertexArray(this._bakeVAO);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this._bakeVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.STREAM_DRAW);
+    const aUV = gl.getAttribLocation(prog, 'a_uv'), aCell = gl.getAttribLocation(prog, 'a_cell');
+    gl.enableVertexAttribArray(aUV); gl.vertexAttribPointer(aUV, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(aCell); gl.vertexAttribPointer(aCell, 2, gl.FLOAT, false, 16, 8);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this._exportTexture);
+    gl.uniform1i(gl.getUniformLocation(prog, 'u_src'), 0);
+    gl.uniform2f(gl.getUniformLocation(prog, 'u_grid'), cols, rows);
+    gl.drawArrays(gl.POINTS, 0, n);
+    gl.readPixels(0, 0, cols, rows, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.enable(gl.BLEND);
+    gl.viewport(0, 0, this._glCanvas.width, this._glCanvas.height);
+    gl.useProgram(this._program);
+  }
+
+  /** Snapshot every active uniform of the tab program (after a normal render). */
+  snapshotUniforms() {
+    if (!this._webglAvailable) return {};
+    const gl = this._gl, prog = this._program;
+    gl.useProgram(prog);
+    const n = gl.getProgramParameter(prog, gl.ACTIVE_UNIFORMS);
+    const out = {};
+    for (let i = 0; i < n; i++) {
+      const info = gl.getActiveUniform(prog, i);
+      if (!info) continue;
+      const loc = gl.getUniformLocation(prog, info.name);
+      const v = gl.getUniform(prog, loc);
+      let kind;
+      switch (info.type) {
+        case gl.FLOAT: kind = 'f'; break;
+        case gl.FLOAT_VEC2: kind = 'f2'; break;
+        case gl.FLOAT_VEC3: kind = 'f3'; break;
+        case gl.FLOAT_VEC4: kind = 'f4'; break;
+        case gl.INT: case gl.BOOL: case gl.SAMPLER_2D: kind = 'i'; break;
+        default: continue;
+      }
+      out[info.name] = { k: kind, v: (v && v.length !== undefined) ? Array.from(v) : (typeof v === 'boolean' ? (v ? 1 : 0) : v) };
+    }
+    return out;
+  }
+
+  /** Lookup textures the colour pipeline reads (units 1-6) plus the squircle SDF. */
+  getHTMLExportTextures() {
+    const out = {};
+    const rec = this._texDataByUnit || {};
+    for (const unit of [1, 2, 3, 4, 5, 6]) if (rec[unit]) out[unit] = rec[unit];
+    if (this._cornerSDFData) {
+      const { w, h, data } = this._cornerSDFData;
+      const rgba = new Uint8Array(w * h * 4);
+      for (let i = 0; i < w * h; i++) { rgba[i * 4] = data[i]; rgba[i * 4 + 3] = 255; }
+      out[8] = { w, h, data: rgba, float: false, linear: true };
+    }
+    return out;
   }
 
   renderToTarget(target, width, height) {

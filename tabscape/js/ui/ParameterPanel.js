@@ -1008,6 +1008,7 @@ class ParameterPanel extends ParameterPanelBase {
       ['mp4', 'MP4', true],
       ['gif', 'GIF', true],
       ['mp4-record', 'MP4 Recording', false],
+      ['html', 'HTML (interactive)', false],
     ]) {
       const opt = document.createElement('option');
       opt.value = value;
@@ -1067,6 +1068,7 @@ class ParameterPanel extends ParameterPanelBase {
       const fpsMap = {
         'png-sequence': [24, 30, 60, 120],
         'mp4': [24, 30, 60, 120],
+        'html': [10, 15, 24, 30],
       };
       const sourceFps = (typeof imageSampler !== 'undefined' && imageSampler && imageSampler.videoFramerate)
         ? Math.round(imageSampler.videoFramerate) : 30;
@@ -1077,12 +1079,16 @@ class ParameterPanel extends ParameterPanelBase {
         fpsSelect.style.display = '';
         fpsSelect.innerHTML = '';
         // Include the source video's native fps if not already in the list
-        const merged = Array.from(new Set([...fpsList, sourceFps])).sort((a, b) => a - b);
+        // HTML bakes texture colours per frame: lower rate keeps the file small
+        // (the runtime blends between baked frames, so 15 fps still looks smooth).
+        const isHtml = format === 'html';
+        const merged = isHtml ? fpsList : Array.from(new Set([...fpsList, sourceFps])).sort((a, b) => a - b);
+        const defaultFps = isHtml ? 15 : sourceFps;
         for (const fps of merged) {
           const opt = document.createElement('option');
           opt.value = fps;
-          opt.textContent = fps + ' fps' + (fps === sourceFps ? ' (source)' : '');
-          if (fps === sourceFps) opt.selected = true;
+          opt.textContent = fps + ' fps' + (!isHtml && fps === sourceFps ? ' (source)' : '');
+          if (fps === defaultFps) opt.selected = true;
           fpsSelect.appendChild(opt);
         }
       }
@@ -1108,6 +1114,7 @@ class ParameterPanel extends ParameterPanelBase {
         case 'mp4': this._startVideoExport('mp4'); break;
         case 'gif': this._startVideoExport('gif'); break;
         case 'mp4-record': this._toggleRecordExport(exportBtn); break;
+        case 'html': this._exportHTML(); break;
       }
     });
 
@@ -1366,6 +1373,56 @@ class ParameterPanel extends ParameterPanelBase {
   _cancelVideoExport() {
     if (this._videoExporter) {
       this._videoExporter.cancel();
+    }
+  }
+
+  // ─── Interactive HTML export ─────────────────────────────────
+
+  async _exportHTML() {
+    if (typeof app === 'undefined' || !app.renderer || !app.renderer._webglAvailable) {
+      alert('Cannot export HTML: renderer not initialized.');
+      return;
+    }
+    if (this._videoExporter) return; // an export is already running
+
+    const fpsSelect = document.getElementById('exportFramerate');
+    const framerate = parseInt(fpsSelect ? fpsSelect.value : '') || 15;
+    const progressEl = document.getElementById('videoExportProgress');
+    const fillEl = document.getElementById('videoExportFill');
+    const labelEl = document.getElementById('videoExportLabel');
+    progressEl.style.display = '';
+
+    const exporter = new HTMLExporter({
+      renderer: app.renderer,
+      imageSampler: imageSampler,
+      animationController: window.animationController || null,
+    });
+    this._videoExporter = exporter;
+    exporter.onProgress = (done, total, label) => {
+      fillEl.style.width = (done / total * 100).toFixed(1) + '%';
+      labelEl.textContent = label === 'Compressing' ? 'Compressing\u2026' : done + ' / ' + total;
+    };
+
+    try {
+      const html = await exporter.export({ framerate });
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = this._getExportPrefix() + '-' + this._exportTimestamp() + '.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      if (!err || err.message !== 'cancelled') {
+        console.error('HTML export failed:', err);
+        alert('HTML export failed: ' + (err && err.message));
+      }
+    } finally {
+      progressEl.style.display = 'none';
+      fillEl.style.width = '0%';
+      this._videoExporter = null;
     }
   }
 

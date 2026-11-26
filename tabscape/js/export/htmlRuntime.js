@@ -1,0 +1,366 @@
+/**
+ * Tabscape HTML export runtime.
+ *
+ * This file is NOT loaded by the app. HTMLExporter fetches it as text and
+ * inlines it into the exported .html, after the motion classes (SimplexNoise,
+ * CursorTracker, RippleManager, BaseMode, RippleMode, AttractorMode).
+ *
+ * Rendering: one squircle base shape (the app's own SDF shader + corner SDF
+ * texture) drawn as WebGL2 instances. Each instance only carries position,
+ * scale and a texel index into a per-frame colour texture, so the whole grid
+ * is a single draw call.
+ *
+ * Expects window.__TABSCAPE__ = { meta, vert, frag, uniforms, textures, state,
+ * motion, blob } where blob is base64(gzip(frames)).
+ */
+(async function () {
+  'use strict';
+  const D = window.__TABSCAPE__;
+  const M = D.meta;
+
+  // ── Decode baked payload ──
+  const b64ToBytes = (b64) => {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  };
+  const gunzip = async (bytes) => {
+    if (typeof DecompressionStream === 'undefined') throw new Error('DecompressionStream unsupported');
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  };
+  const payload = await gunzip(b64ToBytes(D.blob));
+
+  const cols = M.cols, rows = M.rows, N = cols * rows;
+  const colorFrames = M.colorFrames, maskFrames = M.maskFrames;
+  let o = 0;
+  const colorData = payload.subarray(o, o += N * 4 * colorFrames);
+  const maskData = maskFrames > 0 ? payload.subarray(o, o += N * maskFrames) : null;
+  const validData = payload.subarray(o, o += N);
+
+  // ── Canvas / GL ──
+  const canvas = document.getElementById('tabscape');
+  const gl = canvas.getContext('webgl2', { alpha: true, premultipliedAlpha: true, antialias: false });
+  if (!gl) { document.body.textContent = 'WebGL2 is required.'; return; }
+
+  const compile = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, D.vert));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, D.frag));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+
+  // Restore every uniform captured from the app
+  const U = {};
+  const uloc = (name) => (name in U) ? U[name] : (U[name] = gl.getUniformLocation(prog, name));
+  for (const [name, { k, v }] of Object.entries(D.uniforms)) {
+    const l = uloc(name); if (!l) continue;
+    if (k === 'f') gl.uniform1f(l, v);
+    else if (k === 'f2') gl.uniform2fv(l, v);
+    else if (k === 'f3') gl.uniform3fv(l, v);
+    else if (k === 'f4') gl.uniform4fv(l, v);
+    else if (k === 'i') gl.uniform1i(l, v);
+  }
+
+  // Textures
+  const makeTex = (unit, filter) => {
+    const t = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([128, 128, 128, 255]));
+    return t;
+  };
+  for (let unit = 1; unit <= 8; unit++) {
+    const info = D.textures[unit];
+    makeTex(unit, (unit === 4 || unit === 7) ? gl.NEAREST : gl.LINEAR);
+    if (!info) continue;
+    const bytes = b64ToBytes(info.data);
+    if (info.float) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, info.w, info.h, 0, gl.RGBA, gl.FLOAT, new Float32Array(bytes.buffer));
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, info.w, info.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
+    }
+  }
+  // Unit 0 = current baked colour frame, unit 9 = previous (shader blends them)
+  const texCur = makeTex(0, gl.NEAREST);
+  const texPrev = makeTex(9, gl.NEAREST);
+  const uploadFrame = (tex, unit, f) => {
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, cols, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      colorData.subarray(f * N * 4, (f + 1) * N * 4));
+  };
+  gl.uniform1i(uloc('u_srcTexture'), 0);
+  gl.uniform1i(uloc('u_prevTexture'), 9);
+  gl.uniform1f(uloc('u_loopFade'), 0);
+  gl.uniform1i(uloc('u_hasTexture'), M.hasTexture ? 1 : 0);
+  gl.uniform2f(uloc('u_resolution'), M.canvasW, M.canvasH);
+
+  // Geometry: one unit quad (the base tab) + per-instance attributes
+  const INST = 8;
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  const quad = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-0.5, -0.5, 0.5, -0.5, -0.5, 0.5, 0.5, 0.5]), gl.STATIC_DRAW);
+  const aPos = gl.getAttribLocation(prog, 'a_position');
+  gl.enableVertexAttribArray(aPos);
+  gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+  const instBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  const inst = new Float32Array(N * INST);
+  gl.bufferData(gl.ARRAY_BUFFER, inst.byteLength, gl.DYNAMIC_DRAW);
+  [['a_offset', 2, 0], ['a_texUV', 2, 8], ['a_gridUV', 2, 16], ['a_manualScale', 1, 24], ['a_imageScale', 1, 28]]
+    .forEach(([name, size, off]) => {
+      const loc = gl.getAttribLocation(prog, name);
+      if (loc < 0) return;
+      gl.enableVertexAttribArray(loc);
+      gl.vertexAttribPointer(loc, size, gl.FLOAT, false, INST * 4, off);
+      gl.vertexAttribDivisor(loc, 1);
+    });
+  gl.bindVertexArray(null);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+  // Static per-cell data
+  const cellStepX = M.cubeWidth + M.spacingX, cellStepY = M.cubeHeight + M.spacingY;
+  const halfCW = M.cubeWidth / 2, halfCH = M.cubeHeight / 2;
+  const homeX = new Float32Array(N), homeY = new Float32Array(N);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const i = r * cols + c;
+    homeX[i] = M.offsetX + (r % 2 === 1 ? cellStepX * 0.5 : 0) + c * cellStepX + halfCW;
+    homeY[i] = M.offsetY + r * cellStepY + halfCH;
+  }
+
+  // ── State + motion timeline ──
+  const state = Object.assign({}, D.state);
+  const motion = D.motion;
+  const bezierY = (x, p1x, p1y, p2x, p2y) => {
+    const cubic = (t, a, b, c, d) => { const u = 1 - t; return u * u * u * a + 3 * u * u * t * b + 3 * u * t * t * c + t * t * t * d; };
+    let lo = 0, hi = 1, t = x;
+    for (let i = 0; i < 20; i++) {
+      const cx = cubic(t, 0, p1x, p2x, 1);
+      if (Math.abs(cx - x) < 0.001) break;
+      if (cx < x) lo = t; else hi = t;
+      t = (hi + lo) / 2;
+    }
+    return cubic(t, 0, p1y, p2y, 1);
+  };
+  const parseEase = (e) => {
+    if (!e || e === 'linear') return null;
+    if (e === 'ease-in-out') return [0.42, 0, 0.58, 1];
+    const p = String(e).split(',').map(s => parseFloat(s.trim()));
+    return p.length === 4 && p.every(Number.isFinite) ? p : null;
+  };
+  const isHex = (v) => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v);
+  const mix = (a, b, t) => {
+    const an = parseFloat(a), bn = parseFloat(b);
+    if (Number.isFinite(an) && Number.isFinite(bn) && String(a).trim() !== '' && String(b).trim() !== '') return an + (bn - an) * t;
+    if (isHex(a) && isHex(b)) {
+      const ch = (h, i) => parseInt(h.slice(i, i + 2), 16);
+      return '#' + [1, 3, 5].map(i => Math.round(ch(a, i) + (ch(b, i) - ch(a, i)) * t).toString(16).padStart(2, '0')).join('');
+    }
+    return t < 1 ? a : b;
+  };
+  const sampleTrack = (tr, time) => {
+    const k = tr.keyframes;
+    if (k.length === 1 || time <= k[0].time) return k[0].value;
+    if (time >= k[k.length - 1].time) return k[k.length - 1].value;
+    for (let i = 0; i < k.length - 1; i++) {
+      const a = k[i], b = k[i + 1];
+      if (time < a.time || time > b.time) continue;
+      const span = b.time - a.time;
+      let t = span <= 0 ? 1 : (time - a.time) / span;
+      const bz = parseEase(a.easing);
+      if (bz) t = bezierY(t, bz[0], bz[1], bz[2], bz[3]);
+      let v = mix(a.value, b.value, t);
+      if (typeof v === 'number' && tr.step) v = Math.round(v / tr.step) * tr.step;
+      return v;
+    }
+    return k[k.length - 1].value;
+  };
+  let motionTime = motion ? (motion.currentTime || 0) : 0;
+  const applyMotion = () => {
+    if (!motion) return;
+    for (const tr of motion.tracks) state[tr.key] = sampleTrack(tr, motionTime);
+  };
+
+  // ── Physics (mirrors GridRenderer._updateCore / getGridInfo) ──
+  rippleManager = new RippleManager();
+  const modes = { ripple: new RippleMode(rippleManager, cursorTracker), attractor: new AttractorMode(cursorTracker) };
+  let activeModeName = null, activeMode = null;
+  let push = [], scaleValues = [], lastGridSize = 0;
+  const smoothParams = { scaleMin: 8, scaleMax: 8, brightnessVariance: 8 };
+  const smooth = {};
+  const W = M.canvasW, H = M.canvasH;
+
+  const getGridInfo = () => {
+    const c = state.gridDensity || 60;
+    const ch = M.layoutW / (c * 4.4), cw = ch * 4, sx = ch * 0.1, sy = ch * 0.1;
+    const r = Math.ceil(M.layoutH / (ch + sy)) + 1;
+    const tw = c * cw + (c - 1) * sx, th = r * ch + (r - 1) * sy;
+    const gx = state.gridOffsetX ?? 50, gy = state.gridOffsetY ?? 50;
+    return { cols: c, rows: r, gridSize: c * r, cubeWidth: cw, cubeHeight: ch, spacingX: sx, spacingY: sy,
+      offsetX: (W - tw) * (gx / 100), offsetY: (H - th) * (gy / 100), canvasWidth: W, canvasHeight: H };
+  };
+  const setMode = (name) => {
+    if (activeMode) activeMode.deactivate();
+    for (let i = 0; i < push.length; i++) { push[i].x = 0; push[i].y = 0; scaleValues[i] = 1; }
+    activeModeName = name;
+    activeMode = name === 'attractor' ? modes.attractor : modes.ripple;
+    activeMode.activate(getGridInfo());
+  };
+  const updatePhysics = (dt) => {
+    const c = state.gridDensity || 60;
+    const chU = W / (c * 4.4);
+    const gridSize = c * (Math.ceil(H / (chU * 1.1)) + 1);
+    if (gridSize !== lastGridSize) {
+      push = []; scaleValues = [];
+      for (let i = 0; i < gridSize; i++) { push.push({ x: 0, y: 0 }); scaleValues.push(1); }
+      lastGridSize = gridSize;
+    }
+    if (activeMode.usesDecay !== false) {
+      const step = Math.pow(state.pushDecay || 0.92, dt * 60);
+      for (let i = 0; i < push.length; i++) { push[i].x *= step; push[i].y *= step; }
+    }
+    for (const key in smoothParams) {
+      const target = parseFloat(state[key]);
+      if (isNaN(target)) continue;
+      smooth[key] = smooth[key] == null ? target : smooth[key] + (target - smooth[key]) * Math.min(1, smoothParams[key] * dt);
+    }
+    activeMode.update(dt, state, getGridInfo(), push, scaleValues);
+  };
+  const sm = (key, fallback) => smooth[key] != null ? smooth[key] : (parseFloat(state[key]) || fallback);
+
+  // ── Layout + input ──
+  let dpr = 1, rect = { x: 0, y: 0, w: 1, h: 1 };
+  const layout = () => {
+    dpr = Math.min(2, window.devicePixelRatio || 1);
+    const vw = window.innerWidth, vh = window.innerHeight;
+    const s = Math.min(vw / W, vh / H);
+    rect = { w: W * s, h: H * s, x: (vw - W * s) / 2, y: (vh - H * s) / 2 };
+    canvas.style.width = rect.w + 'px'; canvas.style.height = rect.h + 'px';
+    canvas.style.left = rect.x + 'px'; canvas.style.top = rect.y + 'px';
+    canvas.width = Math.round(rect.w * dpr); canvas.height = Math.round(rect.h * dpr);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  };
+  window.addEventListener('resize', layout);
+  layout();
+
+  let mouseX = -1e5, mouseY = -1e5, paused = false;
+  const toCanvas = (e) => ({ x: (e.clientX - rect.x) / rect.w * W, y: (e.clientY - rect.y) / rect.h * H });
+  const inside = (p) => p.x >= 0 && p.x <= W && p.y >= 0 && p.y <= H;
+  window.addEventListener('pointermove', (e) => { const p = toCanvas(e); mouseX = p.x; mouseY = p.y; });
+  canvas.addEventListener('pointerenter', () => cursorTracker.setActive(true));
+  canvas.addEventListener('pointerleave', () => cursorTracker.setActive(false));
+  window.addEventListener('pointerdown', (e) => {
+    const p = toCanvas(e); mouseX = p.x; mouseY = p.y;
+    if (!paused && inside(p)) activeMode.onMousePressed(p.x, p.y, state);
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space') return;
+    e.preventDefault();
+    paused = !paused;
+    Object.values(modes).forEach(m => m.setPaused(paused));
+    rippleManager.setPaused(paused);
+    if (paused) cursorTracker.freeze(); else cursorTracker.unfreeze();
+  });
+
+  // ── Frame loop ──
+  const bg = D.state.backgroundColor || '#FFFEF7';
+  const bgR = parseInt(bg.slice(1, 3), 16) / 255, bgG = parseInt(bg.slice(3, 5), 16) / 255, bgB = parseInt(bg.slice(5, 7), 16) / 255;
+  const pushScale = M.layoutW / W;
+  let bakeTime = 0, last = performance.now(), curPair = '';
+  applyMotion();
+  setMode(state.effectMode === 'attractor' ? 'attractor' : 'ripple');
+
+  const frame = (now) => {
+    const dt = Math.min(0.1, Math.max(0, (now - last) / 1000));
+    last = now;
+
+    if (!paused) {
+      if (motion && motion.duration > 0) {
+        motionTime = (motionTime + dt) % motion.duration;
+        applyMotion();
+        const wanted = state.effectMode === 'attractor' ? 'attractor' : 'ripple';
+        if (wanted !== activeModeName) setMode(wanted);
+      }
+      cursorTracker.update(mouseX, mouseY, dt);
+      if (rippleManager.hasActiveRipples()) rippleManager.update(state.rippleSpeed || 300);
+      updatePhysics(dt);
+      bakeTime += dt;
+    }
+
+    // Baked colour/mask frame pair
+    const pos = M.duration > 0 ? ((bakeTime % M.duration) / M.duration) : 0;
+    const cf = pos * colorFrames, ck = Math.floor(cf) % colorFrames, ck2 = (ck + 1) % colorFrames;
+    const pair = ck + ':' + ck2;
+    if (pair !== curPair) { uploadFrame(texPrev, 9, ck); uploadFrame(texCur, 0, ck2); curPair = pair; }
+    gl.uniform1f(uloc('u_frameBlend'), colorFrames > 1 ? cf - Math.floor(cf) : 1);
+    let mk = 0, mk2 = 0, mt = 0;
+    if (maskFrames > 1) { const mf = pos * maskFrames; mk = Math.floor(mf) % maskFrames; mk2 = (mk + 1) % maskFrames; mt = mf - Math.floor(mf); }
+    const mo1 = mk * N, mo2 = mk2 * N, maskScale = M.maskMax / 255;
+
+    // Motion-driven uniforms (may be keyframed)
+    const sMin = sm('scaleMin', 100) / 100;
+    const sMax = Math.max(sMin, sm('scaleMax', 150) / 100);
+    gl.uniform1f(uloc('u_motionScaleMin'), sMin);
+    gl.uniform1f(uloc('u_motionScaleMax'), sMax);
+    gl.uniform1f(uloc('u_brightnessVariance'), (smooth.brightnessVariance ?? (state.brightnessVariance || 0)) / 100);
+    gl.uniform1i(uloc('u_scaleHueShiftEnabled'), (state.scaleHueRange ?? 0) > 0 ? 1 : 0);
+    gl.uniform1f(uloc('u_scaleHueRange'), state.scaleHueRange ?? 60);
+
+    // Instances: one copy of the base tab per cell (position, scale, texel)
+    let count = 0;
+    for (let r = 0; r < rows; r++) {
+      const gridV = rows > 1 ? r / (rows - 1) : 0.5;
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        if (M.hasTexture && !validData[i]) continue;
+        const p = push[i];
+        const px = p ? p.x : 0, py = p ? p.y : 0;
+        const influence = Math.min(1, Math.sqrt(px * px + py * py) / 50);
+        let s = sMin + (sMax - sMin) * influence;
+        if (maskData) s *= (maskFrames > 1 ? maskData[mo1 + i] + (maskData[mo2 + i] - maskData[mo1 + i]) * mt : maskData[i]) * maskScale;
+        if (s < 0.001) continue;
+        const off = count * INST;
+        inst[off] = homeX[i] + px * pushScale;
+        inst[off + 1] = homeY[i] + py * pushScale;
+        inst[off + 2] = M.hasTexture ? (c + 0.5) / cols : -1;
+        inst[off + 3] = M.hasTexture ? (r + 0.5) / rows : -1;
+        inst[off + 4] = cols > 1 ? c / (cols - 1) : 0.5;
+        inst[off + 5] = gridV;
+        inst[off + 6] = 1;
+        inst[off + 7] = s;
+        count++;
+      }
+    }
+
+    gl.clearColor(bgR, bgG, bgB, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    if (count > 0) {
+      gl.useProgram(prog);
+      gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst.subarray(0, count * INST));
+      gl.bindVertexArray(vao);
+      gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+      gl.bindVertexArray(null);
+    }
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+})().catch((err) => {
+  console.error(err);
+  document.body.textContent = 'Tabscape export failed to start: ' + (err && err.message);
+});
