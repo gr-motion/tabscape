@@ -1084,7 +1084,7 @@ class ParameterPanel extends ParameterPanelBase {
         // (the runtime blends between baked frames, so 15 fps still looks smooth).
         const isHtml = format === 'html';
         const merged = isHtml ? fpsList : Array.from(new Set([...fpsList, sourceFps])).sort((a, b) => a - b);
-        const defaultFps = isHtml ? 15 : sourceFps;
+        const defaultFps = isHtml ? 30 : sourceFps;
         for (const fps of merged) {
           const opt = document.createElement('option');
           opt.value = fps;
@@ -1387,7 +1387,7 @@ class ParameterPanel extends ParameterPanelBase {
     if (this._videoExporter) return; // an export is already running
 
     const fpsSelect = document.getElementById('exportFramerate');
-    const framerate = parseInt(fpsSelect ? fpsSelect.value : '') || 15;
+    const framerate = parseInt(fpsSelect ? fpsSelect.value : '') || 30;
     const resSelect = document.getElementById('exportResolution');
     const targetKB = parseInt(resSelect ? resSelect.value : '') || 150;
     const progressEl = document.getElementById('videoExportProgress');
@@ -1403,7 +1403,7 @@ class ParameterPanel extends ParameterPanelBase {
     this._videoExporter = exporter;
     exporter.onProgress = (done, total, label) => {
       fillEl.style.width = (done / total * 100).toFixed(1) + '%';
-      labelEl.textContent = label === 'Encoding' ? 'Encoding\u2026' : done + ' / ' + total;
+      labelEl.textContent = Math.floor(done / total * 100) + '%';
     };
 
     try {
