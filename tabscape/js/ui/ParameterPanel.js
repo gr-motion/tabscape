@@ -1047,8 +1047,9 @@ class ParameterPanel extends ParameterPanelBase {
         'png-sequence': [1024, 2048, 4096, 8192, 12288, 16384],
         'mp4': [720, 1080, 1440, 2048, 4096],
         'gif': [320, 480, 640, 720],
+        'html': [100, 150, 300, 500, 1000],
       };
-      const defaultRes = { 'png': 4096, 'png-sequence': 4096, 'mp4': 1080, 'gif': 480 };
+      const defaultRes = { 'png': 4096, 'png-sequence': 4096, 'mp4': 1080, 'gif': 480, 'html': 150 };
       const sizes = resMap[format];
       if (!sizes) {
         resSelect.style.display = 'none';
@@ -1058,7 +1059,7 @@ class ParameterPanel extends ParameterPanelBase {
         for (const size of sizes) {
           const opt = document.createElement('option');
           opt.value = size;
-          opt.textContent = size + 'px';
+          opt.textContent = format === 'html' ? size + ' KB max' : size + 'px';
           if (size === defaultRes[format]) opt.selected = true;
           resSelect.appendChild(opt);
         }
@@ -1174,7 +1175,7 @@ class ParameterPanel extends ParameterPanelBase {
         return row;
       };
 
-      const resRow = makeRow('Resolution', resSelect);
+      const resRow = makeRow(formatSelect.value === 'html' ? 'Target size' : 'Resolution', resSelect);
       const fpsRow = makeRow('Framerate', fpsSelect);
       if (resRow) settingsPopup.appendChild(resRow);
       if (fpsRow) settingsPopup.appendChild(fpsRow);
@@ -1387,6 +1388,8 @@ class ParameterPanel extends ParameterPanelBase {
 
     const fpsSelect = document.getElementById('exportFramerate');
     const framerate = parseInt(fpsSelect ? fpsSelect.value : '') || 15;
+    const resSelect = document.getElementById('exportResolution');
+    const targetKB = parseInt(resSelect ? resSelect.value : '') || 150;
     const progressEl = document.getElementById('videoExportProgress');
     const fillEl = document.getElementById('videoExportFill');
     const labelEl = document.getElementById('videoExportLabel');
@@ -1400,11 +1403,11 @@ class ParameterPanel extends ParameterPanelBase {
     this._videoExporter = exporter;
     exporter.onProgress = (done, total, label) => {
       fillEl.style.width = (done / total * 100).toFixed(1) + '%';
-      labelEl.textContent = label === 'Compressing' ? 'Compressing\u2026' : done + ' / ' + total;
+      labelEl.textContent = label === 'Encoding' ? 'Encoding\u2026' : done + ' / ' + total;
     };
 
     try {
-      const html = await exporter.export({ framerate });
+      const html = await exporter.export({ framerate, targetBytes: targetKB * 1024 });
       const blob = new Blob([html], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

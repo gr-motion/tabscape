@@ -5,39 +5,100 @@
  * inlines it into the exported .html, after the motion classes (SimplexNoise,
  * CursorTracker, RippleManager, BaseMode, RippleMode, AttractorMode).
  *
- * Rendering: one squircle base shape (the app's own SDF shader + corner SDF
- * texture) drawn as WebGL2 instances. Each instance only carries position,
- * scale and a texel index into a per-frame colour texture, so the whole grid
- * is a single draw call.
+ * Rendering: one squircle base shape (the app's own SDF shader; the corner
+ * SDF is rebuilt here from the Figma squircle maths) drawn as WebGL2
+ * instances. Each instance only carries position, scale and a texel index,
+ * so the whole grid is a single draw call.
+ *
+ * Colours + mask come from one tiny media atlas: top half = per-cell texture
+ * colour, bottom half = per-cell mask (0 also hides cells off the texture).
+ * Animated scenes ship it as an H.264 video, static ones as a PNG.
  *
  * Expects window.__TABSCAPE__ = { meta, vert, frag, uniforms, textures, state,
- * motion, blob } where blob is base64(gzip(frames)).
+ * motion } and the media as base64 in <script id="tsmedia">.
  */
 (async function () {
   'use strict';
   const D = window.__TABSCAPE__;
   const M = D.meta;
-
-  // ── Decode baked payload ──
   const b64ToBytes = (b64) => {
     const bin = atob(b64);
     const out = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
     return out;
   };
-  const gunzip = async (bytes) => {
-    if (typeof DecompressionStream === 'undefined') throw new Error('DecompressionStream unsupported');
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
-    return new Uint8Array(await new Response(stream).arrayBuffer());
-  };
-  const payload = await gunzip(b64ToBytes(D.blob));
-
   const cols = M.cols, rows = M.rows, N = cols * rows;
-  const colorFrames = M.colorFrames, maskFrames = M.maskFrames;
-  let o = 0;
-  const colorData = payload.subarray(o, o += N * 4 * colorFrames);
-  const maskData = maskFrames > 0 ? payload.subarray(o, o += N * maskFrames) : null;
-  const validData = payload.subarray(o, o += N);
+
+  // ── Media atlas ──
+  const mediaEl = document.getElementById('tsmedia');
+  const mediaUrl = URL.createObjectURL(new Blob([b64ToBytes(mediaEl.textContent.trim())], { type: M.media.mime }));
+  mediaEl.remove();
+  let media;
+  if (M.media.kind === 'video') {
+    media = document.createElement('video');
+    media.muted = true; media.loop = true; media.playsInline = true; media.autoplay = true;
+    media.setAttribute('playsinline', '');
+    media.src = mediaUrl;
+    await new Promise((res, rej) => { media.onloadeddata = res; media.onerror = () => rej(new Error('This browser cannot play the embedded H.264 video')); });
+    media.play().catch(() => {});
+  } else {
+    media = new Image();
+    media.src = mediaUrl;
+    await media.decode();
+  }
+
+  // Squircle corner SDF (same construction as WebGLGridRenderer._buildCornerSDFTexture:
+  // box 4x4, radius 1, smoothing 1 -> two cubics per corner, no arc).
+  const buildCornerSDF = () => {
+    const R = 128, SEG = 64;
+    const toRad = (d) => d * Math.PI / 180;
+    const rad = 1, sm = 1, p = 2;
+    const arcMeasure = 90 * (1 - sm);
+    const arcLen = Math.sin(toRad(arcMeasure / 2)) * rad * Math.SQRT2;
+    const alpha = (90 - arcMeasure) / 2;
+    const p34 = rad * Math.tan(toRad(alpha / 2));
+    const beta = 45 * sm;
+    const c = p34 * Math.cos(toRad(beta)), d = c * Math.tan(toRad(beta));
+    const b = (p - arcLen - c - d) / 3, a = 2 * b;
+    const pts = [];
+    const cubic = (x0, y0, x1, y1, x2, y2, x3, y3) => {
+      for (let i = 0; i <= SEG; i++) {
+        const t = i / SEG, m = 1 - t;
+        const x = m * m * m * x0 + 3 * m * m * t * x1 + 3 * m * t * t * x2 + t * t * t * x3;
+        const y = m * m * m * y0 + 3 * m * m * t * y1 + 3 * m * t * t * y2 + t * t * t * y3;
+        pts.push({ x: 4 - x, y });
+      }
+    };
+    const x0 = 4 - p, y0 = 0;
+    cubic(x0, y0, x0 + a, 0, x0 + a + b, 0, x0 + a + b + c, d);
+    const x1 = x0 + a + b + c + arcLen, y1 = d + arcLen;
+    cubic(x1, y1, x1 + d, y1 + c, x1 + d, y1 + b + c, x1 + d, y1 + a + b + c);
+    const poly = [{ x: 0, y: 0 }, ...pts, { x: 0, y: 0 }];
+    const pip = (px, py) => {
+      let ins = false;
+      for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+        const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi + 1e-12) + xi)) ins = !ins;
+      }
+      return ins;
+    };
+    const out = new Uint8Array(R * R * 4);
+    for (let j = 0; j < R; j++) for (let i = 0; i < R; i++) {
+      const vx = i / (R - 1) * 2, vy = j / (R - 1) * 2;
+      let min = Infinity;
+      for (let k = 0; k < pts.length - 1; k++) {
+        const p0 = pts[k], p1 = pts[k + 1], dx = p1.x - p0.x, dy = p1.y - p0.y, l2 = dx * dx + dy * dy;
+        if (l2 < 1e-12) continue;
+        const t = Math.max(0, Math.min(1, ((vx - p0.x) * dx + (vy - p0.y) * dy) / l2));
+        const qx = p0.x + t * dx - vx, qy = p0.y + t * dy - vy, d2 = qx * qx + qy * qy;
+        if (d2 < min) min = d2;
+      }
+      const dist = Math.sqrt(min) * (pip(vx, vy) ? 1 : -1);
+      out[(j * R + i) * 4] = Math.round(Math.max(0, Math.min(1, (dist + 2) / 4)) * 255);
+      out[(j * R + i) * 4 + 3] = 255;
+    }
+    return { w: R, h: R, data: out };
+  };
 
   // ── Canvas / GL ──
   const canvas = document.getElementById('tabscape');
@@ -81,29 +142,36 @@
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([128, 128, 128, 255]));
     return t;
   };
+  const sdf = buildCornerSDF();
   for (let unit = 1; unit <= 8; unit++) {
     const info = D.textures[unit];
+    if (unit === 8) {
+      makeTex(8, gl.LINEAR);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, sdf.w, sdf.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, sdf.data);
+      continue;
+    }
     makeTex(unit, (unit === 4 || unit === 7) ? gl.NEAREST : gl.LINEAR);
     if (!info) continue;
-    const bytes = b64ToBytes(info.data);
-    if (info.float) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, info.w, info.h, 0, gl.RGBA, gl.FLOAT, new Float32Array(bytes.buffer));
-    } else {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, info.w, info.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
-    }
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, info.w, info.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(info.data));
   }
-  // Unit 0 = current baked colour frame, unit 9 = previous (shader blends them)
-  const texCur = makeTex(0, gl.NEAREST);
-  const texPrev = makeTex(9, gl.NEAREST);
-  const uploadFrame = (tex, unit, f) => {
-    gl.activeTexture(gl.TEXTURE0 + unit);
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, cols, rows, 0, gl.RGBA, gl.UNSIGNED_BYTE,
-      colorData.subarray(f * N * 4, (f + 1) * N * 4));
+  // Unit 0 = media atlas (colours + mask). Video atlas is 2x per cell, so
+  // LINEAR at the cell centre averages that cell's 2x2 block.
+  const texMedia = makeTex(0, M.media.scale > 1 ? gl.LINEAR : gl.NEAREST);
+  gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+  const uploadMedia = () => {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texMedia);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, media);
   };
+  uploadMedia();
+  makeTex(9, gl.NEAREST);
   gl.uniform1i(uloc('u_srcTexture'), 0);
   gl.uniform1i(uloc('u_prevTexture'), 9);
   gl.uniform1f(uloc('u_loopFade'), 0);
+  gl.uniform1f(uloc('u_frameBlend'), 1);
+  gl.uniform2f(uloc('u_gridDim'), cols, rows);
+  gl.uniform1f(uloc('u_maskMax'), M.maskMax);
+  gl.uniform1f(uloc('u_maskFloor'), M.media.kind === 'video' ? 0.03 : 0);
   gl.uniform1i(uloc('u_hasTexture'), M.hasTexture ? 1 : 0);
   gl.uniform2f(uloc('u_resolution'), M.canvasW, M.canvasH);
 
@@ -277,6 +345,7 @@
     if (e.code !== 'Space') return;
     e.preventDefault();
     paused = !paused;
+    if (M.media.kind === 'video') { if (paused) media.pause(); else media.play().catch(() => {}); }
     Object.values(modes).forEach(m => m.setPaused(paused));
     rippleManager.setPaused(paused);
     if (paused) cursorTracker.freeze(); else cursorTracker.unfreeze();
@@ -286,7 +355,7 @@
   const bg = D.state.backgroundColor || '#FFFEF7';
   const bgR = parseInt(bg.slice(1, 3), 16) / 255, bgG = parseInt(bg.slice(3, 5), 16) / 255, bgB = parseInt(bg.slice(5, 7), 16) / 255;
   const pushScale = M.layoutW / W;
-  let bakeTime = 0, last = performance.now(), curPair = '';
+  let last = performance.now(), lastMediaTime = -1;
   applyMotion();
   setMode(state.effectMode === 'attractor' ? 'attractor' : 'ripple');
 
@@ -308,18 +377,12 @@
       if (inside({ x: mouseX, y: mouseY }) && !cursorTracker.isActive) cursorTracker.setActive(true);
       if (rippleManager.hasActiveRipples()) rippleManager.update(state.rippleSpeed || 300);
       updatePhysics(dt);
-      bakeTime += dt;
     }
 
-    // Baked colour/mask frame pair
-    const pos = M.duration > 0 ? ((bakeTime % M.duration) / M.duration) : 0;
-    const cf = pos * colorFrames, ck = Math.floor(cf) % colorFrames, ck2 = (ck + 1) % colorFrames;
-    const pair = ck + ':' + ck2;
-    if (pair !== curPair) { uploadFrame(texPrev, 9, ck); uploadFrame(texCur, 0, ck2); curPair = pair; }
-    gl.uniform1f(uloc('u_frameBlend'), colorFrames > 1 ? cf - Math.floor(cf) : 1);
-    let mk = 0, mk2 = 0, mt = 0;
-    if (maskFrames > 1) { const mf = pos * maskFrames; mk = Math.floor(mf) % maskFrames; mk2 = (mk + 1) % maskFrames; mt = mf - Math.floor(mf); }
-    const mo1 = mk * N, mo2 = mk2 * N, maskScale = M.maskMax / 255;
+    if (M.media.kind === 'video' && media.readyState >= 2 && media.currentTime !== lastMediaTime) {
+      uploadMedia();
+      lastMediaTime = media.currentTime;
+    }
 
     // Motion-driven uniforms (may be keyframed)
     const sMin = sm('scaleMin', 100) / 100;
@@ -336,18 +399,16 @@
       const gridV = rows > 1 ? r / (rows - 1) : 0.5;
       for (let c = 0; c < cols; c++) {
         const i = r * cols + c;
-        if (M.hasTexture && !validData[i]) continue;
         const p = push[i];
         const px = p ? p.x : 0, py = p ? p.y : 0;
         const influence = Math.min(1, Math.sqrt(px * px + py * py) / 50);
         let s = sMin + (sMax - sMin) * influence;
-        if (maskData) s *= (maskFrames > 1 ? maskData[mo1 + i] + (maskData[mo2 + i] - maskData[mo1 + i]) * mt : maskData[i]) * maskScale;
         if (s < 0.001) continue;
         const off = count * INST;
         inst[off] = homeX[i] + px * pushScale;
         inst[off + 1] = homeY[i] + py * pushScale;
         inst[off + 2] = M.hasTexture ? (c + 0.5) / cols : -1;
-        inst[off + 3] = M.hasTexture ? (r + 0.5) / rows : -1;
+        inst[off + 3] = M.hasTexture ? (r + 0.5) / rows * 0.5 : -1;
         inst[off + 4] = cols > 1 ? c / (cols - 1) : 0.5;
         inst[off + 5] = gridV;
         inst[off + 6] = 1;
