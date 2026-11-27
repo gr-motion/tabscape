@@ -150,9 +150,13 @@ class HTMLExporter {
     if (dispVals) {
       // Same map as the mask (same file + framing): store it once.
       if (maskVals) {
-        let maxDiff = 0;
-        for (let i = 0; i < dispVals.length && maxDiff <= 2 / 255; i++) maxDiff = Math.max(maxDiff, Math.abs(dispVals[i] - maskVals[i] * maskMax));
-        dispSameAsMask = maxDiff <= 2 / 255 && Math.abs(maskMax - 1) < 1e-3;
+        // Compare raw values (video frames can differ by a code value or two)
+        let maxDiff = 0, sum = 0;
+        for (let i = 0; i < dispVals.length && maxDiff <= 8 / 255; i++) {
+          const dlt = Math.abs(dispVals[i] - maskVals[i] * maskMax);
+          sum += dlt; if (dlt > maxDiff) maxDiff = dlt;
+        }
+        dispSameAsMask = maxDiff <= 8 / 255 && sum / dispVals.length <= 1 / 255;
       }
       if (!dispSameAsMask) dispModel = await HTMLExporter._fitScalarModel(dispVals, totalFrames, cols, rows, duration, 0.05);
     }
@@ -224,7 +228,7 @@ class HTMLExporter {
     const animated = F > 1 && !HTMLExporter._allFramesEqualF(vals, cols * rows, F);
     const ds = [1, 2, 3, 4, 6, 8, 12];
     const rates = animated ? [10, 6, 4, 3, 2, 1.5, 1, 0.5] : [0];
-    let best = null, bestErr = null;
+    const cands = [];
     for (const d of ds) {
       let lastK = -1;
       for (const rate of rates) {
@@ -236,11 +240,13 @@ class HTMLExporter {
         const enc = HTMLExporter._encodeScalar(m);
         const size = (await HTMLExporter._gzip(enc)).length;
         const cand = { m, enc, size, err };
-        if (err <= tol && (!best || size < best.size)) best = cand;
-        if (!bestErr || err < bestErr.err) bestErr = cand;
+        cands.push(cand);
       }
     }
-    const pick = best || bestErr;
+    // Smallest within tolerance; else smallest within 2x tolerance (noisy
+    // sources); else the most accurate.
+    const smallest = (lim) => cands.filter(c => c.err <= lim).sort((a, b) => a.size - b.size)[0];
+    const pick = smallest(tol) || smallest(tol * 2) || cands.slice().sort((a, b) => a.err - b.err)[0];
     const m = pick.m;
     return { bytes: pick.enc, meta: { d: m.d, gw: m.gw, gh: m.gh, K: m.K } };
   }
@@ -330,25 +336,34 @@ class HTMLExporter {
     const animated = F > 1 && !HTMLExporter._allFramesEqualF(colors, cols * rows * 4, F);
     const ds = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 24].filter(d => d === 1 || d <= Math.max(cols, rows));
     const rates = animated ? [10, 7.5, 5, 4, 3, 2.5, 2, 1.5, 1, 0.75, 0.5, 0.35, 0.25] : [0];
-    let best = null, bestErr = null;
-    for (let di = 0; di < ds.length; di++) {
-      const d = ds[di];
-      onStep(di / ds.length);
-      let lastK = -1;
-      for (const rate of rates) {
-        const K = animated ? Math.max(2, Math.min(F, Math.round(duration * rate))) : 1;
-        if (K === lastK) continue;
-        lastK = K;
-        const model = HTMLExporter._buildKeyframes(colors, F, cols, rows, valid, d, K);
-        const err = HTMLExporter._modelError(colors, F, cols, rows, valid, model);
-        const cand = { model, err };
-        if (!bestErr || err.rms < bestErr.err.rms) bestErr = cand;
-        if (err.rms > tol) break; // fewer keyframes only gets worse
-        cand.size = (await HTMLExporter._gzip(HTMLExporter._encodeKeyframes(model))).length;
-        if (!best || cand.size < best.size) best = cand;
+    const search = async (lim) => {
+      let best = null, bestErr = null;
+      for (let di = 0; di < ds.length; di++) {
+        const d = ds[di];
+        onStep(di / ds.length);
+        let lastK = -1;
+        for (const rate of rates) {
+          const K = animated ? Math.max(2, Math.min(F, Math.round(duration * rate))) : 1;
+          if (K === lastK) continue;
+          lastK = K;
+          const model = HTMLExporter._buildKeyframes(colors, F, cols, rows, valid, d, K);
+          const err = HTMLExporter._modelError(colors, F, cols, rows, valid, model);
+          const cand = { model, err };
+          if (!bestErr || err.rms < bestErr.err.rms) bestErr = cand;
+          if (err.rms > lim) break; // fewer keyframes only gets worse
+          cand.size = (await HTMLExporter._gzip(HTMLExporter._encodeKeyframes(model))).length;
+          if (!best || cand.size < best.size) best = cand;
+        }
+        await new Promise(r => setTimeout(r, 0));
       }
-      await new Promise(r => setTimeout(r, 0));
-    }
+      return { best, bestErr };
+    };
+    // Smallest within tolerance; noisy sources get 2x, then 4x before
+    // falling back to the most accurate model.
+    let found = await search(tol);
+    if (!found.best) found = await search(tol * 2);
+    if (!found.best) found = await search(tol * 4);
+    const best = found.best, bestErr = found.bestErr;
     const pick = best || bestErr;
     const m = pick.model;
     // Grain amplitude: residual std (uniform noise in [-1,1] has std 1/sqrt(3)).
