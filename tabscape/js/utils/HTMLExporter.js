@@ -49,7 +49,11 @@ class HTMLExporter {
   // so playback smoothness does not depend on it.
   static get BAKE_FPS() { return 10; }
 
-  async export({ targetBytes = 150 * 1024 } = {}) {
+  // Max RMS colour error (0-1) of the texture model; the smallest file that
+  // stays under it wins. Mask / displacement use their own tolerances.
+  static get TEXTURE_TOLERANCE() { return 0.05; }
+
+  async export({ includeMask = true, includeDisplacement = true } = {}) {
     this._cancelled = false;
     const renderer = this.renderer;
     const sampler = this.sampler;
@@ -65,14 +69,15 @@ class HTMLExporter {
     );
 
     // ── What animates ──
-    const maskMode = state.maskMode || 'tabloop';
+    // Excluded effects behave as if switched off in the file.
+    const maskMode = includeMask ? (state.maskMode || 'tabloop') : 'none';
     const vidDur = (sm) => {
       const d = sm && sm.hasVideo && sm.hasVideo() && sm.video && sm.video.elt ? sm.video.elt.duration : 0;
       return d > 0 && isFinite(d) ? d : 0;
     };
     const texVideo = !!(sampler && sampler.hasVideo && sampler.hasVideo());
-    const mSampler = (maskMode !== 'tabloop' && typeof maskSampler !== 'undefined') ? maskSampler : null;
-    const dSampler = (typeof displaceSampler !== 'undefined' && displaceSampler && displaceSampler.hasImage && displaceSampler.hasImage()) ? displaceSampler : null;
+    const mSampler = (maskMode !== 'tabloop' && maskMode !== 'none' && typeof maskSampler !== 'undefined') ? maskSampler : null;
+    const dSampler = (includeDisplacement && typeof displaceSampler !== 'undefined' && displaceSampler && displaceSampler.hasImage && displaceSampler.hasImage()) ? displaceSampler : null;
     const maskDur = vidDur(mSampler), dispDur = vidDur(dSampler);
     const duration = texVideo && parseFloat(state.loopDuration) > 0
       ? parseFloat(state.loopDuration)
@@ -84,9 +89,9 @@ class HTMLExporter {
     const cols = probe.cols, rows = probe.rows, N = cols * rows;
     const totalFrames = animated ? Math.max(2, Math.round(duration * HTMLExporter.BAKE_FPS)) : 1;
     const colors = new Uint8Array(totalFrames * N * 4);
-    const hasMaskBase = maskMode !== 'tabloop' && !!(probe.maskBase || probe.mask);
+    const hasMaskBase = maskMode !== 'tabloop' && maskMode !== 'none' && !!(probe.maskBase || probe.mask);
     const maskVals = hasMaskBase ? new Float32Array(totalFrames * N) : null;
-    const dispVals = probe.disp ? new Float32Array(totalFrames * N) : null;
+    const dispVals = (includeDisplacement && probe.disp) ? new Float32Array(totalFrames * N) : null;
 
     // ── Bake: texture colours, image-mask values, displacement map values ──
     const helper = new VideoExporter({ p5Instance: renderer.p, renderer, imageSampler: sampler });
@@ -171,7 +176,7 @@ class HTMLExporter {
       duration, maskMode, maskMax,
       maskModel: maskModel ? maskModel.meta : null,
       maskViewport: probe.maskViewport || null,
-      disp: probe.disp ? { dx: probe.disp.dx, dy: probe.disp.dy, ds: probe.disp.ds, radius: probe.disp.radius, sameAsMask: dispSameAsMask } : null,
+      disp: dispVals ? { dx: probe.disp.dx, dy: probe.disp.dy, ds: probe.disp.ds, radius: probe.disp.radius, sameAsMask: dispSameAsMask } : null,
       dispModel: dispModel ? dispModel.meta : null,
       tex: null, // filled by the texture model below
     };
@@ -189,28 +194,21 @@ class HTMLExporter {
       'window.__TABSCAPE__=' + JSON.stringify(data) + ';\n' +
       HTMLExporter._stripJS(motionSrcs.join('\n')) + '\n' + HTMLExporter._stripJS(runtimeSrc))));
 
-    // ── Texture model sized to what's left of the cap ──
+    // ── Texture model: smallest that still looks right ──
     const fixedParts = [valid, maskModel && maskModel.bytes, dispModel && dispModel.bytes].filter(Boolean);
-    meta.tex = { d: 1, gw: cols, gh: rows, K: 1, amp: 0 }; // provisional, for overhead estimate
-    const overhead = HTMLExporter._buildDocument(await buildBundle(), '', bg).length + 512;
-    const payloadBudget = Math.floor((targetBytes - overhead) * 3 / 4);
-    if (payloadBudget < 1024) throw new Error('Target size is too small for this composition.');
-
+    meta.tex = { d: 1, gw: cols, gh: rows, K: 1, amp: 0 };
     let texBytes = new Uint8Array(0);
     if (probe.texReady) {
-      const model = await HTMLExporter._fitTextureModel(colors, totalFrames, cols, rows, valid, duration, payloadBudget, fixedParts, (x) => progress(0.86 + x * 0.12));
+      const model = await HTMLExporter._fitTextureModel(colors, totalFrames, cols, rows, valid, duration, HTMLExporter.TEXTURE_TOLERANCE, (x) => progress(0.86 + x * 0.12));
       meta.tex = model.meta;
       texBytes = model.bytes;
     }
 
-    // ── Assemble, then verify the cap ──
+    // ── Assemble ──
     const payload = HTMLExporter._concat([texBytes, ...fixedParts]);
     const mediaB64 = HTMLExporter._bytesToB64(await HTMLExporter._gzip(payload));
     const html = HTMLExporter._buildDocument(await buildBundle(), mediaB64, bg);
     progress(1);
-    if (html.length > targetBytes) {
-      throw new Error('Export is ' + Math.round(html.length / 1024) + ' KB, above the ' + Math.round(targetBytes / 1024) + ' KB cap. Try a larger target size.');
-    }
     return html;
   }
 
@@ -323,38 +321,38 @@ class HTMLExporter {
    * cells), box-filtered in space and time. Picks the (d, keyframes/s) pair
    * with the lowest reconstruction error that fits the byte budget.
    */
-  static async _fitTextureModel(colors, F, cols, rows, valid, duration, budget, fixedParts, onStep) {
-    const animated = F > 1;
-    const ds = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 24, 32].filter(d => d === 1 || d <= Math.max(cols, rows));
-    const rates = animated ? [10, 7.5, 5, 4, 3, 2.5, 2, 1.5, 1, 0.75, 0.5, 0.35, 0.25, 0.15] : [0];
-    const fixedLen = fixedParts.reduce((a, p) => a + p.length, 0);
-    const sizeOf = async (bytes) => (await HTMLExporter._gzip(HTMLExporter._concat([bytes, ...fixedParts]))).length;
-
-    let best = null;
+  /**
+   * Smallest texture model (gzip size) whose reconstruction error stays under
+   * `tol`; falls back to the most accurate candidate. Coarser keyframe rates
+   * are only tried while the error is still within tolerance.
+   */
+  static async _fitTextureModel(colors, F, cols, rows, valid, duration, tol, onStep) {
+    const animated = F > 1 && !HTMLExporter._allFramesEqual(colors, cols * rows * 4, F);
+    const ds = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 24].filter(d => d === 1 || d <= Math.max(cols, rows));
+    const rates = animated ? [10, 7.5, 5, 4, 3, 2.5, 2, 1.5, 1, 0.75, 0.5, 0.35, 0.25] : [0];
+    let best = null, bestErr = null;
     for (let di = 0; di < ds.length; di++) {
       const d = ds[di];
       onStep(di / ds.length);
-      // Highest keyframe rate that fits for this spatial resolution.
-      let fit = null;
+      let lastK = -1;
       for (const rate of rates) {
         const K = animated ? Math.max(2, Math.min(F, Math.round(duration * rate))) : 1;
-        if (fit && fit.K === K) continue;
-        const gw = Math.ceil(cols / d), gh = Math.ceil(rows / d);
-        if (gw * gh * K * 3 * 0.05 + fixedLen * 0.05 > budget) continue; // clearly too big, skip the gzip
+        if (K === lastK) continue;
+        lastK = K;
         const model = HTMLExporter._buildKeyframes(colors, F, cols, rows, valid, d, K);
-        const size = await sizeOf(HTMLExporter._encodeKeyframes(model));
-        if (size <= budget) { fit = { model, size }; break; }
+        const err = HTMLExporter._modelError(colors, F, cols, rows, valid, model);
+        const cand = { model, err };
+        if (!bestErr || err.rms < bestErr.err.rms) bestErr = cand;
+        if (err.rms > tol) break; // fewer keyframes only gets worse
+        cand.size = (await HTMLExporter._gzip(HTMLExporter._encodeKeyframes(model))).length;
+        if (!best || cand.size < best.size) best = cand;
       }
-      if (!fit) continue;
-      const err = HTMLExporter._modelError(colors, F, cols, rows, valid, fit.model);
-      if (!best || err.rms < best.err.rms) best = { ...fit, err };
-      if (d === 1 && !animated) break; // full-res still image fits: done
       await new Promise(r => setTimeout(r, 0));
     }
-    if (!best) throw new Error('Target size is too small for this texture.');
-    const m = best.model;
+    const pick = best || bestErr;
+    const m = pick.model;
     // Grain amplitude: residual std (uniform noise in [-1,1] has std 1/sqrt(3)).
-    const amp = m.d > 1 || animated ? Math.min(0.25, best.err.rms * Math.sqrt(3) * 0.9) : 0;
+    const amp = m.d > 1 || animated ? Math.min(0.25, pick.err.rms * Math.sqrt(3) * 0.9) : 0;
     return {
       bytes: HTMLExporter._encodeKeyframes(m),
       meta: { d: m.d, gw: m.gw, gh: m.gh, K: m.K, amp },

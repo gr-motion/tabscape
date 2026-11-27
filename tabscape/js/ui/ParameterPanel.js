@@ -1046,9 +1046,8 @@ class ParameterPanel extends ParameterPanelBase {
         'png-sequence': [1024, 2048, 4096, 8192, 12288, 16384],
         'mp4': [720, 1080, 1440, 2048, 4096],
         'gif': [320, 480, 640, 720],
-        'html': [100, 150, 300, 500, 1000],
       };
-      const defaultRes = { 'png': 4096, 'png-sequence': 4096, 'mp4': 1080, 'gif': 480, 'html': 150 };
+      const defaultRes = { 'png': 4096, 'png-sequence': 4096, 'mp4': 1080, 'gif': 480 };
       const sizes = resMap[format];
       if (!sizes) {
         resSelect.style.display = 'none';
@@ -1058,7 +1057,7 @@ class ParameterPanel extends ParameterPanelBase {
         for (const size of sizes) {
           const opt = document.createElement('option');
           opt.value = size;
-          opt.textContent = format === 'html' ? size + ' KB max' : size + 'px';
+          opt.textContent = size + 'px';
           if (size === defaultRes[format]) opt.selected = true;
           resSelect.appendChild(opt);
         }
@@ -1130,6 +1129,19 @@ class ParameterPanel extends ParameterPanelBase {
     let settingsOpen = false;
     let settingsCloseHandler = null;
 
+    // HTML export: include mask / displacement in the file
+    const makeExportToggle = (id) => {
+      const t = document.createElement('input');
+      t.type = 'checkbox';
+      t.className = 'parameter__toggle';
+      t.id = id;
+      t.checked = true;
+      return t;
+    };
+    const htmlMaskToggle = makeExportToggle('exportHtmlMask');
+    const htmlDispToggle = makeExportToggle('exportHtmlDisplacement');
+    this._htmlExportToggles = { mask: htmlMaskToggle, displacement: htmlDispToggle };
+
     const closeSettingsPopup = () => {
       // Move the selects back to the hidden host so id lookups still resolve.
       if (typeof hiddenHost !== 'undefined' && hiddenHost) {
@@ -1169,11 +1181,26 @@ class ParameterPanel extends ParameterPanelBase {
         return row;
       };
 
-      const resRow = makeRow(formatSelect.value === 'html' ? 'Target size' : 'Resolution', resSelect);
+      const resRow = makeRow('Resolution', resSelect);
       const fpsRow = makeRow('Framerate', fpsSelect);
       if (resRow) settingsPopup.appendChild(resRow);
       if (fpsRow) settingsPopup.appendChild(fpsRow);
-      if (!resRow && !fpsRow) {
+      // HTML: choose which effects go into the file
+      let htmlRows = 0;
+      if (formatSelect.value === 'html') {
+        for (const [labelText, toggle] of [['Mask', htmlMaskToggle], ['Displacement', htmlDispToggle]]) {
+          const row = document.createElement('label');
+          row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:calc(14px * var(--s));cursor:pointer;';
+          const lbl = document.createElement('span');
+          lbl.textContent = labelText;
+          lbl.style.cssText = 'font-size:calc(11px * var(--s));color:var(--text-muted, #aaa);';
+          row.appendChild(lbl);
+          row.appendChild(toggle);
+          settingsPopup.appendChild(row);
+          htmlRows++;
+        }
+      }
+      if (!resRow && !fpsRow && !htmlRows) {
         const empty = document.createElement('div');
         empty.textContent = 'No settings for this format.';
         empty.style.cssText = 'font-size:calc(11px * var(--s));color:var(--text-muted, #aaa);';
@@ -1223,7 +1250,7 @@ class ParameterPanel extends ParameterPanelBase {
     settingsBtn.addEventListener('click', openSettingsPopup);
 
     const updateSettingsBtnVisibility = () => {
-      const anyVisible = resSelect.style.display !== 'none' || fpsSelect.style.display !== 'none';
+      const anyVisible = resSelect.style.display !== 'none' || fpsSelect.style.display !== 'none' || formatSelect.value === 'html';
       settingsWrap.style.display = anyVisible ? '' : 'none';
       if (!anyVisible && settingsOpen) closeSettingsPopup();
     };
@@ -1380,8 +1407,6 @@ class ParameterPanel extends ParameterPanelBase {
     }
     if (this._videoExporter) return; // an export is already running
 
-    const resSelect = document.getElementById('exportResolution');
-    const targetKB = parseInt(resSelect ? resSelect.value : '') || 150;
     const progressEl = document.getElementById('videoExportProgress');
     const fillEl = document.getElementById('videoExportFill');
     const labelEl = document.getElementById('videoExportLabel');
@@ -1399,7 +1424,11 @@ class ParameterPanel extends ParameterPanelBase {
     };
 
     try {
-      const html = await exporter.export({ targetBytes: targetKB * 1024 });
+      const toggles = this._htmlExportToggles || {};
+      const html = await exporter.export({
+        includeMask: toggles.mask ? toggles.mask.checked : true,
+        includeDisplacement: toggles.displacement ? toggles.displacement.checked : true,
+      });
       const blob = new Blob([html], { type: 'text/html' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
