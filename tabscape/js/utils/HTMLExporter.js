@@ -51,7 +51,7 @@ class HTMLExporter {
 
   // Max RMS colour error (0-1) of the texture model; the smallest file that
   // stays under it wins. Mask / displacement use their own tolerances.
-  static get TEXTURE_TOLERANCE() { return 0.05; }
+  static get TEXTURE_TOLERANCE() { return 0.09; }
 
   async export({ includeMask = true, includeDisplacement = true } = {}) {
     this._cancelled = false;
