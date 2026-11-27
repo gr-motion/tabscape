@@ -149,7 +149,19 @@ class HTMLExporter {
     }
     if (dispVals) {
       // Same map as the mask (same file + framing): store it once.
-      if (maskVals) {
+      // Same file + same sampling settings as the mask: reuse the mask model.
+      const st = state, sync = st.maskSyncWithTexture !== false;
+      const same = (a, b) => Math.abs((parseFloat(a) || 0) - (parseFloat(b) || 0)) < 1e-6;
+      if (maskVals && mSampler && dSampler && mSampler.sourceKey && mSampler.sourceKey === dSampler.sourceKey &&
+          (st.maskChannel || 'luminance') === (st.displaceChannel || 'luminance') &&
+          !!st.maskInvert === !!st.displaceInvert && same(st.maskSoftness, st.displaceSoftness) &&
+          same(sync ? st.texturePositionX : st.maskPositionX, st.displacePositionX) &&
+          same(sync ? st.texturePositionY : st.maskPositionY, st.displacePositionY) &&
+          same((sync ? st.textureScale : st.maskScale) ?? 100, st.displaceScale ?? 100) &&
+          same(sync ? st.textureRotation : st.maskRotation, 0)) {
+        dispSameAsMask = true;
+      }
+      if (maskVals && !dispSameAsMask) {
         // Compare raw values (video frames can differ by a code value or two)
         let maxDiff = 0, sum = 0;
         for (let i = 0; i < dispVals.length && maxDiff <= 8 / 255; i++) {
@@ -246,7 +258,7 @@ class HTMLExporter {
     // Smallest within tolerance; else smallest within 2x tolerance (noisy
     // sources); else the most accurate.
     const smallest = (lim) => cands.filter(c => c.err <= lim).sort((a, b) => a.size - b.size)[0];
-    const pick = smallest(tol) || smallest(tol * 2) || cands.slice().sort((a, b) => a.err - b.err)[0];
+    const pick = smallest(tol) || smallest(tol * 2) || smallest(0.15) || cands.slice().sort((a, b) => a.err - b.err)[0];
     const m = pick.m;
     return { bytes: pick.enc, meta: { d: m.d, gw: m.gw, gh: m.gh, K: m.K } };
   }

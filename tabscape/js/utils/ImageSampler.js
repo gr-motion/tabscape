@@ -105,6 +105,11 @@ class ImageSampler {
   loadMedia(source) {
     return new Promise((resolve, reject) => {
       this.clearMedia();
+      // Identity of the loaded file, so other samplers can tell they show the
+      // same media (used by the HTML export to store a shared map once).
+      this.sourceKey = source instanceof File
+        ? ['file', source.name, source.size, source.lastModified].join('|')
+        : (typeof source === 'string' ? 'url|' + source : null);
 
       let fileType = '';
       let url = '';
