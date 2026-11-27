@@ -327,7 +327,7 @@ class HTMLExporter {
    * are only tried while the error is still within tolerance.
    */
   static async _fitTextureModel(colors, F, cols, rows, valid, duration, tol, onStep) {
-    const animated = F > 1 && !HTMLExporter._allFramesEqual(colors, cols * rows * 4, F);
+    const animated = F > 1 && !HTMLExporter._allFramesEqualF(colors, cols * rows * 4, F);
     const ds = [1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 24].filter(d => d === 1 || d <= Math.max(cols, rows));
     const rates = animated ? [10, 7.5, 5, 4, 3, 2.5, 2, 1.5, 1, 0.75, 0.5, 0.35, 0.25] : [0];
     let best = null, bestErr = null;
