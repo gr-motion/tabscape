@@ -285,6 +285,18 @@ class GridRenderer {
       state.displaceChannel || 'luminance', !!state.displaceInvert,
       (state.displaceSoftness ?? 0) / 100, null, 0
     );
+    // HTML export bake: keep the raw map values; the export runtime applies
+    // Smooth Reaction / Spread live. Skipping them here also leaves the live
+    // reaction state untouched.
+    if (this._bakeCapture) {
+      const pxScale0 = refW > 0 ? refW / 1400 : 1;
+      this._bakeCapture.disp = {
+        raw: Float32Array.from(values.subarray ? values.subarray(0, cols * rows) : values.slice(0, cols * rows)),
+        dx: amountX * pxScale0, dy: amountY * pxScale0, ds: amountScale / 100,
+        radius: (state.displaceReactionRadius ?? 0) * pxScale0,
+      };
+      return null;
+    }
     if (state.displaceSmooth) {
       values = this._applyDisplaceReaction(values, state);
       const radius = (state.displaceReactionRadius ?? 0) * (refW > 0 ? refW / 1400 : 1);

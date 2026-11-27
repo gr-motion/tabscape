@@ -1279,17 +1279,8 @@ class ParameterPanel extends ParameterPanelBase {
     exportsLabel.className = 'settings-bar__label settings-bar__label--exports';
     exportsLabel.textContent = 'Exports';
 
-    // HTML-only caveat, shown while HTML is the selected format
-    const htmlNote = document.createElement('div');
-    htmlNote.className = 'settings-bar__note';
-    htmlNote.textContent = 'Displacement isn\u2019t supported in HTML export.';
-    const updateHtmlNote = () => { htmlNote.style.display = formatSelect.value === 'html' ? '' : 'none'; };
-    formatSelect.addEventListener('change', updateHtmlNote);
-    updateHtmlNote();
-
     cardBody.appendChild(exportsLabel);
     cardBody.appendChild(exportBar);
-    cardBody.appendChild(htmlNote);
     cardBody.appendChild(progressContainer);
 
   }

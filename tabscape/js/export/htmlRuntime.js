@@ -35,7 +35,38 @@
   let po = 0;
   const texEnc = M.hasTexture ? payload.subarray(po, po += T * TX.K * 3) : null;
   const valid = payload.subarray(po, po += N);
-  const staticMask = M.hasStaticMask ? payload.subarray(po, po += N) : null;
+  // Scalar models (image mask / displacement map): 32-level keyframes,
+  // temporal deltas. Decoded to absolute values here.
+  const readScalar = (mm) => {
+    if (!mm) return null;
+    const T = mm.gw * mm.gh, n = T * mm.K, enc = payload.subarray(po, po += n), out = new Uint8Array(n);
+    for (let k = 0; k < mm.K; k++) for (let t = 0; t < T; t++) out[k * T + t] = ((k > 0 ? out[(k - 1) * T + t] : 0) + enc[k * T + t]) & 255;
+    return { ...mm, data: out };
+  };
+  const maskModel = readScalar(M.maskModel);
+  const dispModel = readScalar(M.dispModel);
+  // Per-cell value at loop time `time` (bilinear in space, linear in time) -> out[]
+  const sampleScalar = (mm, time, scale, out) => {
+    const { d, gw, gh, K, data } = mm, T = gw * gh;
+    let kp = K > 1 ? (time % M.duration) / M.duration * K - 0.5 : 0;
+    let k0 = Math.floor(kp); const kt = K > 1 ? kp - k0 : 0;
+    k0 = ((k0 % K) + K) % K; const k1 = (k0 + 1) % K, o0 = k0 * T, o1 = k1 * T;
+    const sc = scale / 31;
+    for (let r = 0; r < rows; r++) {
+      const fy = Math.min(gh - 1, Math.max(0, (r + 0.5) / d - 0.5)), y0 = Math.floor(fy), y1 = Math.min(gh - 1, y0 + 1), ty = fy - y0;
+      for (let c = 0; c < cols; c++) {
+        const fx = Math.min(gw - 1, Math.max(0, (c + 0.5) / d - 0.5)), x0 = Math.floor(fx), x1 = Math.min(gw - 1, x0 + 1), tx = fx - x0;
+        const a0 = y0 * gw + x0, a1 = y0 * gw + x1, b0 = y1 * gw + x0, b1 = y1 * gw + x1;
+        let v = (data[o0 + a0] * (1 - tx) + data[o0 + a1] * tx) * (1 - ty) + (data[o0 + b0] * (1 - tx) + data[o0 + b1] * tx) * ty;
+        if (kt > 0) {
+          const v1 = (data[o1 + a0] * (1 - tx) + data[o1 + a1] * tx) * (1 - ty) + (data[o1 + b0] * (1 - tx) + data[o1 + b1] * tx) * ty;
+          v += (v1 - v) * kt;
+        }
+        out[r * cols + c] = v * sc;
+      }
+    }
+    return out;
+  };
   // Keyframe atlas (gw x gh*K, RGBA): undo planar layout + temporal deltas.
   let atlas = null;
   if (texEnc) {
@@ -281,7 +312,7 @@
   // MaskProcessor.computeCustomMask (domain warp in mask-sampler UV space),
   // applied to the stored per-cell mask with bilinear lookup.
   const baseMask = new Float32Array(N), warpBuf = new Float32Array(N);
-  if (staticMask) for (let i = 0; i < N; i++) baseMask[i] = staticMask[i] * M.maskMax / 255;
+  if (maskModel) sampleScalar(maskModel, 0, M.maskMax, baseMask);
   const warpMask = (evo) => {
     const vp = M.maskViewport;
     const amount = Math.max(0, Math.min(99, parseFloat(state.maskNoise) || 0)) / 99;
@@ -310,6 +341,96 @@
       }
     }
     return warpBuf;
+  };
+
+  // ── Displacement (mirrors GridRenderer._computeDisplacement) ──
+  // Raw map values come from the stored model (or the mask, when the same map
+  // drives both); Smooth Reaction + Spread run live, exactly like the app.
+  const cubicBezier = (x1, y1, x2, y2) => {
+    const bez = (a, b, t) => 3 * a * t * (1 - t) * (1 - t) + 3 * b * t * t * (1 - t) + t * t * t;
+    const L = 512, lut = new Float32Array(L + 1);
+    for (let i = 0; i <= L; i++) {
+      const x = i / L; let lo = 0, hi = 1, q = x;
+      for (let k = 0; k < 30; k++) { q = (lo + hi) / 2; if (bez(x1, x2, q) < x) lo = q; else hi = q; }
+      lut[i] = bez(y1, y2, q);
+    }
+    return (t) => { if (t <= 0) return 0; if (t >= 1) return 1; const f = t * L, i = Math.floor(f); return lut[i] + (lut[i + 1] - lut[i]) * (f - i); };
+  };
+  const easeRise = cubicBezier(0, 0, 0, 1), easeFall = cubicBezier(0.3, 0, 0, 1);
+  const dispRaw = new Float32Array(N), env = new Float32Array(N), spreadOut = new Float32Array(N);
+  const rPhase = new Uint8Array(N), rProg = new Float32Array(N), rFrom = new Float32Array(N), rTrig = new Float32Array(N), rArmed = new Uint8Array(N).fill(1);
+  let dispKernel = null;
+  const reaction = (values, dt) => {
+    dt = Math.max(0, Math.min(dt, 0.25));
+    const rise = Math.max(0.05, parseFloat(state.displaceReactionTime) || 0.5), fall = rise * 3;
+    const threshold = (state.displaceThreshold ?? 50) / 100;
+    for (let i = 0; i < N; i++) {
+      const v = values[i];
+      if (!rArmed[i] && v <= Math.max(0, rTrig[i] - 0.2)) rArmed[i] = 1;
+      if (rArmed[i] && v >= threshold) { rArmed[i] = 0; rTrig[i] = v; rPhase[i] = 1; rProg[i] = 0; rFrom[i] = env[i]; }
+      if (rPhase[i] === 1) {
+        rProg[i] += dt / rise;
+        if (rProg[i] >= 1) { env[i] = 1; rPhase[i] = 2; rProg[i] = 0; rFrom[i] = 1; }
+        else env[i] = rFrom[i] + (1 - rFrom[i]) * easeRise(rProg[i]);
+      } else if (rPhase[i] === 2) {
+        rProg[i] += dt / fall;
+        if (rProg[i] >= 1) { env[i] = 0; rPhase[i] = 0; }
+        else env[i] = rFrom[i] * (1 - easeFall(rProg[i]));
+      }
+    }
+    return env;
+  };
+  const spread = (e, radius, sp) => {
+    if (cols < 2 || rows < 2) return e;
+    const stepX = M.cubeWidth + M.spacingX, stepY = M.cubeHeight + M.spacingY, rowShift = stepX * 0.5;
+    const key = radius.toFixed(2) + '|' + sp.toFixed(3);
+    if (!dispKernel || dispKernel.key !== key) {
+      const inner = radius * (1 - sp), falloff = Math.max(1e-6, radius - inner);
+      const weight = (dd) => { if (dd <= inner) return 1; const t = Math.min(1, (radius - dd) / falloff); return t * t * (3 - 2 * t); };
+      const kr = Math.ceil(radius / stepY), kc = Math.ceil(radius / stepX) + 1, kernels = [[], []];
+      for (let parity = 0; parity < 2; parity++) for (let dr = -kr; dr <= kr; dr++) {
+        const targetOdd = ((parity + dr) % 2 + 2) % 2, shift = (targetOdd ? rowShift : 0) - (parity ? rowShift : 0);
+        for (let dc = -kc; dc <= kc; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const dd = Math.hypot(dc * stepX + shift, dr * stepY);
+          if (dd >= radius) continue;
+          const w = weight(dd);
+          if (w > 0.001) kernels[parity].push(dr, dc, w);
+        }
+      }
+      dispKernel = { key, kernels };
+    }
+    spreadOut.set(e);
+    for (let row = 0; row < rows; row++) {
+      const base = row * cols, k = dispKernel.kernels[row & 1];
+      for (let col = 0; col < cols; col++) {
+        const v0 = e[base + col];
+        if (v0 <= 0.001) continue;
+        if (row > 0 && row < rows - 1 && col > 0 && col < cols - 1 &&
+            e[base + col - 1] >= v0 && e[base + col + 1] >= v0 &&
+            e[base - cols + col - 1] >= v0 && e[base - cols + col] >= v0 && e[base - cols + col + 1] >= v0 &&
+            e[base + cols + col - 1] >= v0 && e[base + cols + col] >= v0 && e[base + cols + col + 1] >= v0) continue;
+        for (let j = 0; j < k.length; j += 3) {
+          const r = row + k[j], c = col + k[j + 1];
+          if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
+          const v = v0 * k[j + 2], idx = r * cols + c;
+          if (v > spreadOut[idx]) spreadOut[idx] = v;
+        }
+      }
+    }
+    return spreadOut;
+  };
+  if (dispModel) sampleScalar(dispModel, 0, 1, dispRaw);
+  const DX = M.disp ? M.disp.dx : 0, DY = M.disp ? M.disp.dy : 0, DS = M.disp ? M.disp.ds : 0;
+  const displacement = (dt) => {
+    let v;
+    if (M.disp.sameAsMask) v = baseMask;
+    else { if (dispModel.K > 1) sampleScalar(dispModel, texTime, 1, dispRaw); v = dispRaw; }
+    if (state.displaceSmooth) {
+      v = reaction(v, paused ? 0 : dt);
+      if (M.disp.radius > 0) v = spread(v, M.disp.radius, (state.displaceReactionSpread ?? 100) / 100);
+    }
+    return v;
   };
 
   // ── State + motion timeline ──
@@ -490,8 +611,10 @@
       gl.uniform4f(uloc('u_kf'), 1, 0, TX.gh, TX.amp);
     }
     gl.uniform1f(uloc('u_time'), texTime);
+    if (maskModel && maskModel.K > 1) sampleScalar(maskModel, texTime, M.maskMax, baseMask);
     const mask = M.maskMode === 'tabloop' ? ringMask(evoPhase)
-      : staticMask ? warpMask(evoPhase) : null;
+      : maskModel ? warpMask(evoPhase) : null;
+    const disp = M.disp ? displacement(dt) : null;
 
     // Motion-driven uniforms (may be keyframed)
     const sMin = sm('scaleMin', 100) / 100;
@@ -514,11 +637,12 @@
         const p = push[i];
         const px = p ? p.x : 0, py = p ? p.y : 0;
         const influence = Math.min(1, Math.sqrt(px * px + py * py) / 50);
-        const s = (sMin + (sMax - sMin) * influence) * m;
+        const dv = disp ? disp[i] : 0;
+        const s = (sMin + (sMax - sMin) * influence) * m * (dv ? Math.max(0, 1 + dv * DS) : 1);
         if (s < 0.001) continue;
         const off = count * INST;
-        inst[off] = homeX[i] + px * pushScale;
-        inst[off + 1] = homeY[i] + py * pushScale;
+        inst[off] = homeX[i] + px * pushScale + dv * DX;
+        inst[off + 1] = homeY[i] + py * pushScale + dv * DY;
         inst[off + 2] = M.hasTexture ? (c + 0.5) / cols : -1;
         inst[off + 3] = M.hasTexture ? (r + 0.5) / rows : -1;
         inst[off + 4] = cols > 1 ? c / (cols - 1) : 0.5;

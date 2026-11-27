@@ -64,35 +64,67 @@ class HTMLExporter {
       })
     );
 
-    // ── Bake the texture loop (colours only; masks are live or static) ──
-    const hasVideo = !!(sampler && sampler.hasVideo && sampler.hasVideo());
-    const duration = (parseFloat(state.loopDuration) > 0) ? parseFloat(state.loopDuration) : 10;
+    // ── What animates ──
+    const maskMode = state.maskMode || 'tabloop';
+    const vidDur = (sm) => {
+      const d = sm && sm.hasVideo && sm.hasVideo() && sm.video && sm.video.elt ? sm.video.elt.duration : 0;
+      return d > 0 && isFinite(d) ? d : 0;
+    };
+    const texVideo = !!(sampler && sampler.hasVideo && sampler.hasVideo());
+    const mSampler = (maskMode !== 'tabloop' && typeof maskSampler !== 'undefined') ? maskSampler : null;
+    const dSampler = (typeof displaceSampler !== 'undefined' && displaceSampler && displaceSampler.hasImage && displaceSampler.hasImage()) ? displaceSampler : null;
+    const maskDur = vidDur(mSampler), dispDur = vidDur(dSampler);
+    const duration = texVideo && parseFloat(state.loopDuration) > 0
+      ? parseFloat(state.loopDuration)
+      : (Math.max(maskDur, dispDur) || 10);
+    const animated = texVideo || maskDur > 0 || dispDur > 0;
+
     const probe = renderer.bakeHTMLFrame();
     if (!probe) throw new Error('Renderer is not ready');
     const cols = probe.cols, rows = probe.rows, N = cols * rows;
-    const totalFrames = (hasVideo && probe.texReady) ? Math.max(2, Math.round(duration * HTMLExporter.BAKE_FPS)) : 1;
+    const totalFrames = animated ? Math.max(2, Math.round(duration * HTMLExporter.BAKE_FPS)) : 1;
     const colors = new Uint8Array(totalFrames * N * 4);
+    const hasMaskBase = maskMode !== 'tabloop' && !!(probe.maskBase || probe.mask);
+    const maskVals = hasMaskBase ? new Float32Array(totalFrames * N) : null;
+    const dispVals = probe.disp ? new Float32Array(totalFrames * N) : null;
 
+    // ── Bake: texture colours, image-mask values, displacement map values ──
     const helper = new VideoExporter({ p5Instance: renderer.p, renderer, imageSampler: sampler });
-    const wasPlaying = !!(sampler && sampler.isPlaying);
-    const prevVideoTime = hasVideo ? sampler.getVideoTime() : 0;
-    if (hasVideo) sampler.pause();
+    const videoSamplers = [sampler, mSampler, dSampler].filter((sm, i, arr) => sm && sm.hasVideo && sm.hasVideo() && arr.indexOf(sm) === i);
+    const saved = videoSamplers.map(sm => ({ sm, t: sm.video.elt.currentTime, playing: !sm.video.elt.paused }));
+    const seekSampler = (sm, t) => new Promise((resolve) => {
+      const el = sm.video.elt;
+      el.pause();
+      const done = () => { clearTimeout(timer); el.removeEventListener('seeked', done); if (sm.prepareFrameForExport) sm.prepareFrameForExport(); resolve(); };
+      const timer = setTimeout(done, 5000);
+      el.addEventListener('seeked', done);
+      el.currentTime = t;
+    });
+    videoSamplers.forEach(sm => sm.video.elt.pause());
     renderer._exportInProgress = true;
     try {
       for (let f = 0; f < totalFrames; f++) {
         if (this._cancelled) throw new Error('cancelled');
-        if (totalFrames > 1) await helper._seekAndWait(helper._getSamplerTimeForExport((f / totalFrames) * duration));
+        const t = (f / totalFrames) * duration;
+        if (totalFrames > 1) {
+          if (texVideo) await helper._seekAndWait(helper._getSamplerTimeForExport(t));
+          for (const sm of [mSampler, dSampler]) {
+            if (sm && sm !== sampler && sm.hasVideo && sm.hasVideo()) await seekSampler(sm, t % vidDur(sm));
+          }
+        }
         const bake = f === 0 && totalFrames === 1 ? probe : renderer.bakeHTMLFrame();
         if (!bake || bake.cols * bake.rows !== N) throw new Error('Grid changed during export');
         colors.set(bake.rgba, f * N * 4);
-        progress((f + 1) / totalFrames * 0.85);
+        if (maskVals) maskVals.set(bake.maskBase || bake.mask, f * N);
+        if (dispVals && bake.disp) dispVals.set(bake.disp.raw, f * N);
+        progress((f + 1) / totalFrames * 0.8);
         await new Promise(r => setTimeout(r, 0));
       }
     } finally {
       renderer._exportInProgress = false;
-      if (hasVideo) {
-        await helper._seekAndWait(prevVideoTime);
-        if (wasPlaying) sampler.play();
+      for (const { sm, t, playing } of saved) {
+        if (sm === sampler) await helper._seekAndWait(t); else await seekSampler(sm, t);
+        if (playing) sm.video.elt.play().catch(() => {});
       }
     }
 
@@ -100,18 +132,26 @@ class HTMLExporter {
     const valid = new Uint8Array(N);
     for (let i = 0; i < N; i++) valid[i] = (!probe.texReady || (probe.valid[i] && colors[i * 4 + 3] >= 128)) ? 1 : 0;
 
-    // Static (custom / library) mask, once per cell. The ring mask is live.
-    const maskMode = state.maskMode || 'tabloop';
-    let staticMask = null, maskMax = 1;
-    // Stored unwarped: the runtime applies the noise warp + evolution live.
-    const baseMask = probe.maskBase || probe.mask;
-    if (maskMode !== 'tabloop' && baseMask) {
+    // ── Mask + displacement as small scalar models (smallest that looks right) ──
+    progress(0.82);
+    let maskModel = null, dispModel = null, dispSameAsMask = false, maskMax = 1;
+    if (maskVals) {
       maskMax = 0;
-      for (let i = 0; i < N; i++) if (baseMask[i] > maskMax) maskMax = baseMask[i];
+      for (let i = 0; i < maskVals.length; i++) if (maskVals[i] > maskMax) maskMax = maskVals[i];
       if (!(maskMax > 0)) maskMax = 1;
-      staticMask = new Uint8Array(N);
-      for (let i = 0; i < N; i++) staticMask[i] = Math.round(Math.max(0, baseMask[i]) / maskMax * 255);
+      for (let i = 0; i < maskVals.length; i++) maskVals[i] = Math.max(0, maskVals[i]) / maskMax;
+      maskModel = await HTMLExporter._fitScalarModel(maskVals, totalFrames, cols, rows, duration, 0.035);
     }
+    if (dispVals) {
+      // Same map as the mask (same file + framing): store it once.
+      if (maskVals) {
+        let maxDiff = 0;
+        for (let i = 0; i < dispVals.length && maxDiff <= 2 / 255; i++) maxDiff = Math.max(maxDiff, Math.abs(dispVals[i] - maskVals[i] * maskMax));
+        dispSameAsMask = maxDiff <= 2 / 255 && Math.abs(maskMax - 1) < 1e-3;
+      }
+      if (!dispSameAsMask) dispModel = await HTMLExporter._fitScalarModel(dispVals, totalFrames, cols, rows, duration, 0.05);
+    }
+    progress(0.86);
 
     // ── Colour pipeline from a normal live render ──
     renderer.render();
@@ -128,8 +168,11 @@ class HTMLExporter {
       layoutW: probe.layoutW, layoutH: probe.layoutH,
       canvasW: p.width, canvasH: p.height,
       hasTexture: !!probe.texReady,
-      duration, maskMode, maskMax, hasStaticMask: !!staticMask,
+      duration, maskMode, maskMax,
+      maskModel: maskModel ? maskModel.meta : null,
       maskViewport: probe.maskViewport || null,
+      disp: probe.disp ? { dx: probe.disp.dx, dy: probe.disp.dy, ds: probe.disp.ds, radius: probe.disp.radius, sameAsMask: dispSameAsMask } : null,
+      dispModel: dispModel ? dispModel.meta : null,
       tex: null, // filled by the texture model below
     };
     const data = {
@@ -146,8 +189,8 @@ class HTMLExporter {
       'window.__TABSCAPE__=' + JSON.stringify(data) + ';\n' +
       HTMLExporter._stripJS(motionSrcs.join('\n')) + '\n' + HTMLExporter._stripJS(runtimeSrc))));
 
-    // ── Texture model sized to the cap ──
-    const fixedParts = [valid, staticMask].filter(Boolean);
+    // ── Texture model sized to what's left of the cap ──
+    const fixedParts = [valid, maskModel && maskModel.bytes, dispModel && dispModel.bytes].filter(Boolean);
     meta.tex = { d: 1, gw: cols, gh: rows, K: 1, amp: 0 }; // provisional, for overhead estimate
     const overhead = HTMLExporter._buildDocument(await buildBundle(), '', bg).length + 512;
     const payloadBudget = Math.floor((targetBytes - overhead) * 3 / 4);
@@ -155,7 +198,7 @@ class HTMLExporter {
 
     let texBytes = new Uint8Array(0);
     if (probe.texReady) {
-      const model = await HTMLExporter._fitTextureModel(colors, totalFrames, cols, rows, valid, duration, payloadBudget, fixedParts, (x) => progress(0.85 + x * 0.13));
+      const model = await HTMLExporter._fitTextureModel(colors, totalFrames, cols, rows, valid, duration, payloadBudget, fixedParts, (x) => progress(0.86 + x * 0.12));
       meta.tex = model.meta;
       texBytes = model.bytes;
     }
@@ -169,6 +212,108 @@ class HTMLExporter {
       throw new Error('Export is ' + Math.round(html.length / 1024) + ' KB, above the ' + Math.round(targetBytes / 1024) + ' KB cap. Try a larger target size.');
     }
     return html;
+  }
+
+  // ── Scalar models (mask / displacement) ───────────────────
+
+  /**
+   * Smallest low-res keyframe model of a 0-1 per-cell signal whose RMS error
+   * stays under `tol`: block-averaged d x d cells, K keyframes per loop,
+   * quantised to 32 levels, planar + temporal-delta coded for gzip. If no
+   * candidate meets the tolerance, the most accurate one is used.
+   */
+  static async _fitScalarModel(vals, F, cols, rows, duration, tol) {
+    const animated = F > 1 && !HTMLExporter._allFramesEqualF(vals, cols * rows, F);
+    const ds = [1, 2, 3, 4, 6, 8, 12];
+    const rates = animated ? [10, 6, 4, 3, 2, 1.5, 1, 0.5] : [0];
+    let best = null, bestErr = null;
+    for (const d of ds) {
+      let lastK = -1;
+      for (const rate of rates) {
+        const K = animated ? Math.max(2, Math.min(F, Math.round(duration * rate))) : 1;
+        if (K === lastK) continue;
+        lastK = K;
+        const m = HTMLExporter._buildScalarKeyframes(vals, F, cols, rows, d, K);
+        const err = HTMLExporter._scalarError(vals, F, cols, rows, m);
+        const enc = HTMLExporter._encodeScalar(m);
+        const size = (await HTMLExporter._gzip(enc)).length;
+        const cand = { m, enc, size, err };
+        if (err <= tol && (!best || size < best.size)) best = cand;
+        if (!bestErr || err < bestErr.err) bestErr = cand;
+      }
+    }
+    const pick = best || bestErr;
+    const m = pick.m;
+    return { bytes: pick.enc, meta: { d: m.d, gw: m.gw, gh: m.gh, K: m.K } };
+  }
+
+  static _allFramesEqualF(arr, frameLen, frames) {
+    for (let f = 1; f < frames; f++) {
+      const off = f * frameLen;
+      for (let i = 0; i < frameLen; i++) if (Math.abs(arr[off + i] - arr[i]) > 1 / 255) return false;
+    }
+    return true;
+  }
+
+  static _buildScalarKeyframes(vals, F, cols, rows, d, K) {
+    const gw = Math.ceil(cols / d), gh = Math.ceil(rows / d), T = gw * gh, N = cols * rows;
+    const out = new Uint8Array(K * T);
+    const acc = new Float64Array(T), cnt = new Float64Array(T);
+    for (let k = 0; k < K; k++) {
+      acc.fill(0); cnt.fill(0);
+      const f0 = Math.floor(k * F / K), f1 = Math.max(f0 + 1, Math.floor((k + 1) * F / K));
+      for (let f = f0; f < f1; f++) {
+        for (let r = 0; r < rows; r++) {
+          const ty = Math.floor(r / d) * gw;
+          for (let c = 0; c < cols; c++) {
+            const t = ty + Math.floor(c / d);
+            acc[t] += vals[f * N + r * cols + c]; cnt[t]++;
+          }
+        }
+      }
+      // 32 levels (0..31): coarse on purpose, gzip-friendly
+      for (let t = 0; t < T; t++) out[k * T + t] = Math.round(Math.max(0, Math.min(1, acc[t] / Math.max(1, cnt[t]))) * 31);
+    }
+    return { d, gw, gh, K, data: out };
+  }
+
+  static _encodeScalar(m) {
+    const T = m.gw * m.gh, out = new Uint8Array(m.K * T);
+    for (let k = 0; k < m.K; k++) for (let t = 0; t < T; t++) {
+      out[k * T + t] = (m.data[k * T + t] - (k > 0 ? m.data[(k - 1) * T + t] : 0)) & 255;
+    }
+    return out;
+  }
+
+  /** Same reconstruction as the runtime: bilinear in space, linear in time. */
+  static _scalarAt(m, k0, k1, kt, c, r) {
+    const { d, gw, gh, data } = m, T = gw * gh;
+    const fx = Math.min(gw - 1, Math.max(0, (c + 0.5) / d - 0.5)), fy = Math.min(gh - 1, Math.max(0, (r + 0.5) / d - 0.5));
+    const x0 = Math.floor(fx), y0 = Math.floor(fy), x1 = Math.min(gw - 1, x0 + 1), y1 = Math.min(gh - 1, y0 + 1);
+    const tx = fx - x0, ty = fy - y0;
+    const bil = (k) => {
+      const o = k * T;
+      const a = data[o + y0 * gw + x0] + (data[o + y0 * gw + x1] - data[o + y0 * gw + x0]) * tx;
+      const b = data[o + y1 * gw + x0] + (data[o + y1 * gw + x1] - data[o + y1 * gw + x0]) * tx;
+      return a + (b - a) * ty;
+    };
+    const v0 = bil(k0);
+    return (kt > 0 ? v0 + (bil(k1) - v0) * kt : v0) / 31;
+  }
+
+  static _scalarError(vals, F, cols, rows, m) {
+    const N = cols * rows, K = m.K, step = Math.max(1, Math.floor(F / 24));
+    let sum = 0, n = 0;
+    for (let f = 0; f < F; f += step) {
+      let kp = F > 1 ? (f + 0.5) / F * K - 0.5 : 0;
+      let k0 = Math.floor(kp); const kt = K > 1 ? kp - k0 : 0;
+      k0 = ((k0 % K) + K) % K; const k1 = (k0 + 1) % K;
+      for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+        const e = HTMLExporter._scalarAt(m, k0, k1, kt, c, r) - vals[f * N + r * cols + c];
+        sum += e * e; n++;
+      }
+    }
+    return n ? Math.sqrt(sum / n) : 0;
   }
 
   // ── Texture model ──────────────────────────────────────────
